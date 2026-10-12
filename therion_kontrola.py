@@ -31,7 +31,10 @@ def parse_file(path):
                 if current['close'] and first==0 and i==len(nodes)-1: continue
                 prev=nodes[i-1] if i else None
                 # Conservative: only consecutive repeated endpoint with a straight segment is safe.
-                safe=(i>0 and first==i-1 and node['kind']=='straight' and prev is not None)
+                safe=(i>0 and first==i-1 and prev is not None and
+                      (node['kind']=='straight' or
+                       (node['kind']=='bezier' and
+                        max(dist(node['p'],cp) for cp in current['segments'][i-1]['points'][1:3])<=30)))
                 add(current,'dup',node['row'],key,first_row=nodes[first]['row'],safe=safe)
             else: seen[key]=i
         if current['type'].split(':')[0] in CLOSURE_TYPES and len(nodes)>=2:
@@ -65,6 +68,8 @@ def parse_file(path):
             if cmd=='-close' and len(parts)>1:current['close']=parts[1]=='on';current['close_setting']=parts[1];continue
             if cmd=='-id' and len(parts)>1:current['id']=parts[1];continue
             if len(parts) not in (2,6):
+                if parts == ['smooth','off'] or parts == ['smooth','on']:
+                    continue
                 current['simple']=False
                 continue
             try: nums=[float(n) for n in parts]
@@ -107,7 +112,7 @@ def find_joins(path,shapes):
                 exact=(end==start)
                 # No multiple choices at a shared endpoint; no IDs or internal directives.
                 safe=(exact and degree.get(tuple(end),0)==2 and a['simple'] and b['simple']
-                      and not a['id'] and not b['id'] and a['end']+1==b['start'])
+                      and not a['id'] and not b['id'] and a['scrap'] == b['scrap'])
                 # The original order is deliberately required to keep source edits simple.
                 uid=hashlib.sha1(f'{path}:{a["start"]}:{b["start"]}:join'.encode()).hexdigest()[:16]
                 result.append({'id':uid,'file':str(path.relative_to(ROOT)),'scrap':scrap,
@@ -146,7 +151,7 @@ def preview(file,shape_key,x,y,scope,other_key=None):
 
 HTML=r'''<!doctype html><html lang="cs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Therion – kontrola TH2</title><style>
 :root{font-family:system-ui,Segoe UI,sans-serif;color:#182536;background:#f4f6f9}*{box-sizing:border-box}body{margin:0}header{background:#17283d;color:white;padding:16px 24px}header h2{margin:0 0 6px}header small{color:#c8d4e3}main{display:grid;grid-template-columns:minmax(280px,380px) 1fr;height:calc(100vh - 103px)}aside{overflow:auto;border-right:1px solid #ccd4df;background:white;padding:12px}section{min-width:0;overflow:auto;padding:16px}button,select,input{font:inherit}button{border:1px solid #c2ccd8;background:white;border-radius:7px;padding:7px 11px;cursor:pointer}button:hover{background:#e8f0fa}button.primary{background:#1463a0;color:white;border-color:#1463a0}button.danger{background:#9b3535;color:white}button:disabled{opacity:.45;cursor:default}.entry{border:1px solid #d6dfe8;padding:10px;border-radius:9px;margin:8px 0;cursor:pointer}.entry.active{border:2px solid #1870b9;background:#edf6ff}.entry strong{display:block}.meta{font-size:12px;color:#617082;overflow-wrap:anywhere}.pill{display:inline-block;padding:2px 7px;background:#e7edf5;border-radius:6px;font-size:12px}.warn{color:#a32f2f}.good{color:#137a50}#canvas{width:100%;height:min(62vh,610px);border:1px solid #cad4df;background:white;border-radius:10px;touch-action:none;cursor:grab}.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}.panel{background:white;border:1px solid #d7dfe9;border-radius:10px;padding:14px;margin-bottom:12px}.panel p{margin:6px 0}.spacer{flex:1}#status{white-space:pre-wrap;font-size:13px}.hidden{display:none}label{cursor:pointer}@media(max-width:760px){main{display:block;height:auto}aside{max-height:35vh}#canvas{height:45vh}}</style></head><body>
-<header><h2>Therion · kontrola kresby</h2><small id="root"></small></header><main><aside><div class="toolbar"><button onclick="rescan()">Znovu prohledat</button><span id="count"></span></div><input id="filter" placeholder="Hledat soubor, scrap, ID…" style="width:100%;padding:8px" oninput="renderList()"><div class="toolbar"><select id="kind" onchange="renderList()"><option value="">Všechny nálezy</option><option value="dup">Duplicitní body</option><option value="loop">Smyčky</option><option value="open">Chybějící uzavření</option><option value="merge">Přesné návaznosti</option><option value="near">Blízké konce</option></select><select id="decisionFilter" onchange="renderList()"><option value="">Všechna rozhodnutí</option><option value="fix">Ke změně</option><option value="later">Neprohlédnuté</option><option value="skip">Přeskočené</option></select></div><div id="list"></div></aside><section><div class="panel"><strong id="heading">Vyber nález vlevo</strong><p class="meta" id="detail"></p><div class="toolbar"><label><input type="checkbox" id="surround" checked onchange="draw()"> Okolní čáry</label><button onclick="zoom(0.6)">+ Přiblížit</button><button onclick="zoom(1.6)">− Oddálit</button><button onclick="resetView()">Vycentrovat</button><button onclick="fullScrap()">Celý scrap</button></div><svg id="canvas" viewBox="0 0 900 550" xmlns="http://www.w3.org/2000/svg"></svg><p class="meta">Červená: problematická čára · tyrkysová přerušovaná: navržené uzavření · šedá: okolí · oranžová: táhla Bézierových křivek · červený kroužek: nález. Posouvání tažením myši, zoom kolečkem.</p><div class="toolbar"><button onclick="choose('skip')">Přeskočit</button><button onclick="choose('later')">Později</button><button id="fix" class="primary" onclick="choose('fix')">Schválit odstranění bodu</button><span id="decision"></span></div></div><div class="panel"><strong>Hromadné opravy</strong><p class="meta">Uzavření vybraných čar nastaví -close on; pokud se konce liší, Therion je propojí. Zkontroluj náhled před schválením. Duplicitní body se odstraňují pouze u nulových přímých segmentů.</p><div class="toolbar"><button onclick="exportCsv()">Export CSV</button><button onclick="showPlan()">Zobrazit plán změn</button><button class="danger" onclick="apply()">Zálohovat a provést schválené změny</button></div><div id="status"></div></div></section></main>
+<header><h2>Therion · kontrola kresby</h2><small id="root"></small></header><main><aside><div class="toolbar"><button onclick="rescan()">Znovu prohledat</button><span id="count"></span></div><input id="filter" placeholder="Hledat soubor, scrap, ID…" style="width:100%;padding:8px" oninput="renderList()"><div class="toolbar"><select id="kind" onchange="renderList()"><option value="">Všechny nálezy</option><option value="dup">Duplicitní body</option><option value="loop">Smyčky</option><option value="open">Chybějící uzavření</option><option value="merge">Přesné návaznosti</option><option value="near">Blízké konce</option></select><select id="decisionFilter" onchange="renderList()"><option value="">Všechna rozhodnutí</option><option value="fix">Ke změně</option><option value="later">Neprohlédnuté</option><option value="skip">Přeskočené</option></select></div><div id="list"></div></aside><section><div class="panel"><strong id="heading">Vyber nález vlevo</strong><p class="meta" id="detail"></p><div class="toolbar"><label><input type="checkbox" id="surround" checked onchange="draw()"> Okolní čáry</label><button onclick="zoom(0.6)">+ Přiblížit</button><button onclick="zoom(1.6)">− Oddálit</button><button onclick="resetView()">Vycentrovat</button><button onclick="fullScrap()">Celý scrap</button></div><svg id="canvas" viewBox="0 0 900 550" xmlns="http://www.w3.org/2000/svg"></svg><p class="meta">Červená: problematická čára · tyrkysová přerušovaná: navržené uzavření · šedá: okolí · oranžová: táhla Bézierových křivek · červený kroužek: nález. Posouvání tažením myši, zoom kolečkem.</p><div class="toolbar"><button onclick="choose('skip')">Přeskočit</button><button onclick="choose('later')">Později</button><button id="fix" class="primary" onclick="choose('fix')">Schválit odstranění bodu</button><span id="decision"></span></div></div><div class="panel"><strong>Hromadné opravy</strong><p class="meta">Uzavření vybraných čar nastaví -close on; pokud se konce liší, Therion je propojí. Zkontroluj náhled před schválením. U sousedních shodných bodů lze odstranit i celý Bézierův segment tvořící smyčku. Její tvar se tím změní; schvaluj jednotlivě.</p><div class="toolbar"><button onclick="exportCsv()">Export CSV</button><button onclick="showPlan()">Zobrazit plán změn</button><button class="danger" onclick="apply()">Zálohovat a provést schválené změny</button></div><div id="status"></div></div></section></main>
 <script>
 let data=[], decisions={}, selected=null, shapes=[], view=null, full=false, dragging=null;
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -154,7 +159,7 @@ async function api(path,body){let r=await fetch(path,{method:body?'POST':'GET',h
 async function init(){let r=await api('/api/scan');data=r.findings;$('root').textContent=r.root+' · '+r.files+' souborů';$('count').textContent=data.length+' nálezů';try{decisions=JSON.parse(localStorage.getItem('therion_decisions_'+r.root)||'{}')}catch(e){}renderList();if(data.length)selectItem(data[0].id);if(r.errors.length)$('status').textContent=r.errors.join('\n')}
 function save(){localStorage.setItem('therion_decisions_'+$('root').textContent.split(' · ')[0],JSON.stringify(decisions))}
 function renderList(){let q=$('filter').value.toLowerCase(),k=$('kind').value,d=$('decisionFilter').value;let arr=data.filter(f=>(!k||f.kind===k)&&(!d||(decisions[f.id]||'later')===d)&&(!q||[f.file,f.scrap,f.line_id,f.type,f.row].join(' ').toLowerCase().includes(q)));$('list').innerHTML=arr.map(f=>`<div class="entry ${selected===f.id?'active':''}" onclick="selectItem('${f.id}')"><strong>${f.kind==='dup'?'Duplicitní bod':f.kind==='open'?'Chybí uzavření':f.kind==='merge'?'Sloučení čar':f.kind==='near'?'Blízké konce':'Smyčka'} <span class="pill">${esc(decisions[f.id]||'později')}</span></strong><div class="meta">${esc(f.file)}<br>${esc(f.scrap)} · ${esc(f.type)} ${esc(f.line_id)} · ř. ${f.row}${f.first_row?' / '+f.first_row:''}</div><small class="${f.safe?'good':'warn'}">${f.kind==='open'?'Možnost uzavřít':f.kind==='near'?'Odchylka '+f.gap+' (jen kontrola)':f.safe?'Lze schválit':'Pouze kontrola'}</small></div>`).join('')||'<p>Žádné nálezy.</p>'}
-async function selectItem(id){selected=id;let f=data.find(x=>x.id===id);if(!f)return;full=false;$('heading').textContent=(f.kind==='dup'?'Duplicitní bod':f.kind==='open'?'Chybí uzavření':f.kind==='merge'?'Přesná návaznost':f.kind==='near'?'Blízké konce':'Bézierova smyčka')+' · '+f.type+' '+(f.line_id||'bez ID');$('detail').textContent=f.file+' · scrap '+f.scrap+' · line řádek '+f.start+' · nález řádek '+f.row+(f.first_row?' / '+f.first_row:'')+' · XY '+f.x+', '+f.y+' · -close '+f.close_setting+' · koncové body '+(f.endpoints_equal?'shodné':'rozdílné')+(f.gap!==undefined?' · odchylka '+f.gap:'');$('fix').disabled=!f.safe;$('fix').textContent=f.kind==='open'?'Schválit uzavření (-close on)':f.kind==='merge'?'Schválit sloučení':'Schválit odstranění bodu';$('decision').textContent='Rozhodnutí: '+(decisions[id]||'později');view=null;await draw();renderList()}
+async function selectItem(id){selected=id;let f=data.find(x=>x.id===id);if(!f)return;full=false;$('heading').textContent=(f.kind==='dup'?'Duplicitní bod':f.kind==='open'?'Chybí uzavření':f.kind==='merge'?'Přesná návaznost':f.kind==='near'?'Blízké konce':'Bézierova smyčka')+' · '+f.type+' '+(f.line_id||'bez ID');$('detail').textContent=f.file+' · scrap '+f.scrap+' · line řádek '+f.start+' · nález řádek '+f.row+(f.first_row?' / '+f.first_row:'')+' · XY '+f.x+', '+f.y+' · -close '+f.close_setting+' · koncové body '+(f.endpoints_equal?'shodné':'rozdílné')+(f.gap!==undefined?' · odchylka '+f.gap:'');$('fix').disabled=!f.safe;$('fix').textContent=f.kind==='open'?'Schválit uzavření (-close on)':f.kind==='merge'?'Schválit sloučení':'Schválit odstranění bodu / smyčky';$('decision').textContent='Rozhodnutí: '+(decisions[id]||'později');view=null;await draw();renderList()}
 async function draw(){let f=data.find(x=>x.id===selected);if(!f)return;shapes=await api('/api/preview',{id:f.id,scope:full?'all':$('surround').checked?'near':'line'});if(!view)resetView();renderSvg()}
 function resetView(){let f=data.find(x=>x.id===selected);if(!f)return;view={x:f.x-160,y:f.y-98,w:320,h:196};renderSvg()}
 function fullScrap(){full=true;view=null;api('/api/preview',{id:selected,scope:'all'}).then(s=>{shapes=s;let pts=s.flatMap(x=>x.segments.flatMap(z=>z.points));if(pts.length){let xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]),xmin=Math.min(...xs),xmax=Math.max(...xs),ymin=Math.min(...ys),ymax=Math.max(...ys);let w=Math.max(30,xmax-xmin),h=Math.max(20,ymax-ymin);view={x:xmin-w*.08,y:ymin-h*.08,w:w*1.16,h:h*1.16}}renderSvg()})}
@@ -215,18 +220,34 @@ def apply_fixes(ids):
         original=path.read_bytes();obj=CACHE[rel]
         if hashlib.sha256(original).hexdigest()!=obj['hash']:raise ValueError('Soubor se mezitím změnil, spusť novou kontrolu: '+rel)
         lines=obj['lines'][:]
+        # Assemble edits on the original row indices. Merged definitions can be far
+        # apart, and either geometric order may come first in the file.
+        merged_occupied=set()
         for f in fs:
             if f['kind']=='merge':
                 a=next(sh for sh in obj['shapes'] if sh['key']==f['shape_key'])
                 b=next(sh for sh in obj['shapes'] if sh['key']==f['other_key'])
-                if not (a['end'] < b['start'] and a['nodes'][-1]['p']==b['nodes'][0]['p']):
-                    raise ValueError('Návaznost už není platná')
-                # Keep A, append B's geometry after A's last coordinate. Remove B header,
-                # first coordinate, endline and A's endline. Preserve all other lines.
-                lines[a['end']-1]=''
-                lines[b['start']-1]=''
-                lines[b['nodes'][0]['row']-1]=''
-                continue
+                if not (a['nodes'][-1]['p']==b['nodes'][0]['p'] and a['simple'] and b['simple']
+                        and a['scrap']==b['scrap'] and not a['id'] and not b['id']):
+                    raise ValueError('Sloučení nesplňuje bezpečnostní podmínky')
+                occupied=set(range(a['start'],a['end']+1)) | set(range(b['start'],b['end']+1))
+                if occupied & merged_occupied:raise ValueError('Překryv slučovaných bloků')
+                merged_occupied.update(occupied)
+                # The first coordinate of B is the common endpoint and must not
+                # be copied; all subsequent Bezier handles stay byte-identical.
+                first_b=b['nodes'][0]['row']
+                if first_b!=b['start']+1 or '#' in lines[first_b-1]:
+                    raise ValueError('Neočekávané direktivy před začátkem druhé čáry')
+                body_a=lines[a['start']-1:a['end']-1]
+                body_b=lines[first_b:b['end']-1]
+                newline='\r\n' if lines[a['start']-1].endswith('\r\n') else '\n'
+                combined=body_a+body_b+['endline'+newline]
+                # Keep resulting line at the position of A; delete B only.
+                lines[a['start']-1]= ''.join(combined)
+                for row in range(a['start']+1,a['end']+1):lines[row-1]=''
+                for row in range(b['start'],b['end']+1):lines[row-1]=''
+        for f in fs:
+            if f['kind']=='merge':continue
             if f['kind']=='open':
                 row=f['start']
                 # Existing -close option can appear on a separate line inside the line block.
@@ -243,7 +264,7 @@ def apply_fixes(ids):
                 lines[row-1]=base+('#'+comment if sep else '')
                 continue
             row=f['row'];txt=lines[row-1].split('#',1)[0].strip().split()
-            if len(txt)!=2 or not all(re.fullmatch(r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?',v) for v in txt):raise ValueError('Řádek není jednoduchý bod: '+rel+':'+str(row))
+            if len(txt) not in (2,6) or not all(re.fullmatch(r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?',v) for v in txt):raise ValueError('Řádek není jednoduchý bod: '+rel+':'+str(row))
             lines[row-1]=''
         new=''.join(lines).encode(obj['encoding'])
         changes.append((path,rel,original,new,fs))
@@ -260,7 +281,7 @@ def apply_fixes(ids):
     except Exception:
         for path,original in written:path.write_bytes(original)
         raise
-    return {'upraveno_souboru':len(changes),'odstraneno_bodu':sum(f['kind']=='dup' for f in chosen),'uzavreno_car':sum(f['kind']=='open' for f in chosen),'slouceno_dvojic':sum(f['kind']=='merge' for f in chosen),'zaloha':str(folder),'protokol':str(folder/'protokol.json')}
+    return {'upraveno_souboru':len(changes),'odstraneno_bodu_a_smycek':sum(f['kind']=='dup' for f in chosen),'uzavreno_car':sum(f['kind']=='open' for f in chosen),'slouceno_dvojic':sum(f['kind']=='merge' for f in chosen),'zaloha':str(folder),'protokol':str(folder/'protokol.json')}
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('folder',nargs='?',default='.');p.add_argument('--port',type=int,default=0);p.add_argument('--tolerance',type=float,default=.15);p.add_argument('--near',type=float,default=1.0);args=p.parse_args()
