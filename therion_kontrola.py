@@ -118,6 +118,7 @@ def parse_file(path):
         elif cmd=='endscrap':scrap=''
     endline()
     findings.extend(find_joins(path,shapes,lines))
+    findings.extend(find_chains(path,findings,shapes))
     return {'shapes':shapes,'findings':findings,'lines':lines,'encoding':encoding,'hash':hashlib.sha256(raw).hexdigest()}
 
 def find_joins(path,shapes,source_lines):
@@ -170,6 +171,40 @@ def find_joins(path,shapes,source_lines):
                     'first_point':end,'last_point':start})
     return result
 
+def find_chains(path, findings, shapes):
+    """Maximal unbranched, noncyclic chains from individually safe, directed joins."""
+    edges=[f for f in findings if f['kind']=='merge' and f['safe']]
+    successors={}; predecessors={}
+    for f in edges:
+        successors.setdefault(f['shape_key'],[]).append(f)
+        predecessors.setdefault(f['other_key'],[]).append(f)
+    result=[]; visited=set()
+    bykey={sh['key']:sh for sh in shapes}
+    for edge in edges:
+        start=edge['shape_key']
+        if start in predecessors or start in visited: continue
+        nodes=[start]; at=start; included=[]
+        while len(successors.get(at,[]))==1:
+            e=successors[at][0]; nxt=e['other_key']
+            if len(predecessors.get(nxt,[]))!=1 or nxt in nodes: break
+            included.append(e); nodes.append(nxt); at=nxt
+        visited.update(nodes)
+        if len(nodes)<3: continue
+        members=[bykey[k] for k in nodes]
+        if len({(m['scrap_index'],m['header']) for m in members})!=1: continue
+        uid=hashlib.sha1(f'{path}:chain:{": ".join(nodes)}'.encode()).hexdigest()[:16]
+        result.append({'id':uid,'file':str(path.relative_to(ROOT)),
+            'scrap':members[0]['scrap'],'type':members[0]['type'],'line_id':'',
+            'start':members[0]['start'],'row':members[-1]['start'],
+            'first_row':members[0]['start'],'kind':'chain',
+            'x':included[0]['x'],'y':included[0]['y'],'gap':0,'safe':True,
+            'reason':f'Celý řetězec {len(nodes)} čar; pořadí řádků: '+', '.join(str(m['start']) for m in members),
+            'shape_key':nodes[0], 'other_key':nodes[-1], 'chain_keys':nodes,
+            'close_setting':members[0]['close_setting'],'endpoints_equal':True,
+            'first_point':members[0]['nodes'][-1]['p'],
+            'last_point':members[-1]['nodes'][0]['p']})
+    return result
+
 def scan():
     CACHE.clear();found=[];errors=[];files=0
     for base,dirs,names in os.walk(ROOT):
@@ -182,37 +217,40 @@ def scan():
             except Exception as exc:errors.append(f'{p.relative_to(ROOT)}: {exc}')
     return {'files':files,'findings':found,'errors':errors}
 
-def preview(file,shape_key,x,y,scope,other_key=None):
+def preview(file,shape_key,x,y,scope,other_key=None,chain_keys=None):
     obj=CACHE[file];shapes=[s for s in obj['shapes'] if s['scrap']==next((q['scrap'] for q in obj['shapes'] if q['key']==shape_key),'')]
-    if scope=='line':shapes=[s for s in shapes if s['key']==shape_key or s['key']==other_key]
+    if scope=='line':shapes=[s for s in shapes if s['key'] in (chain_keys or [shape_key,other_key])]
     out=[]
     for s in shapes:
         segs=[]
         for seg in s['segments']:
             pts=seg['points'];flat=flatten(tuple(pts),0.8) if seg['kind']=='bezier' else pts
-            if scope!='all' and not any(abs(p[0]-x)<300 and abs(p[1]-y)<300 for p in flat):continue
+            if scope not in ('all','line') and not any(abs(p[0]-x)<300 and abs(p[1]-y)<300 for p in flat):continue
             segs.append({'points':flat,'handles':pts if s['key']==shape_key and seg['kind']=='bezier' else None})
-        if segs:out.append({'key':s['key'],'segments':segs,'selected':s['key']==shape_key,'other':s['key']==other_key,'type':s['type'], 'endpoints':[s['nodes'][0]['p'],s['nodes'][-1]['p']] if s['nodes'] else []})
+        if segs:out.append({'key':s['key'],'segments':segs,'selected':s['key']==shape_key,'other':s['key']==other_key or s['key'] in (chain_keys or [])[1:],'type':s['type'], 'endpoints':[s['nodes'][0]['p'],s['nodes'][-1]['p']] if s['nodes'] else [],'chain_index':(chain_keys.index(s['key']) if chain_keys and s['key'] in chain_keys else -1)})
     return out
 
 HTML=r'''<!doctype html><html lang="cs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Therion – kontrola TH2</title><style>
 :root{font-family:system-ui,Segoe UI,sans-serif;color:#182536;background:#f4f6f9}*{box-sizing:border-box}body{margin:0}header{background:#17283d;color:white;padding:16px 24px}header h2{margin:0 0 6px}header small{color:#c8d4e3}main{display:grid;grid-template-columns:minmax(280px,380px) 1fr;height:calc(100vh - 103px)}aside{overflow:auto;border-right:1px solid #ccd4df;background:white;padding:12px}section{min-width:0;overflow:auto;padding:16px}button,select,input{font:inherit}button{border:1px solid #c2ccd8;background:white;border-radius:7px;padding:7px 11px;cursor:pointer}button:hover{background:#e8f0fa}button.primary{background:#1463a0;color:white;border-color:#1463a0}button.danger{background:#9b3535;color:white}button:disabled{opacity:.45;cursor:default}.entry{border:1px solid #d6dfe8;padding:10px;border-radius:9px;margin:8px 0;cursor:pointer}.entry.active{border:2px solid #1870b9;background:#edf6ff}.entry strong{display:block}.meta{font-size:12px;color:#617082;overflow-wrap:anywhere}.pill{display:inline-block;padding:2px 7px;background:#e7edf5;border-radius:6px;font-size:12px}.warn{color:#a32f2f}.good{color:#137a50}#canvas{width:100%;height:min(62vh,610px);border:1px solid #cad4df;background:white;border-radius:10px;touch-action:none;cursor:grab}.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}.panel{background:white;border:1px solid #d7dfe9;border-radius:10px;padding:14px;margin-bottom:12px}.panel p{margin:6px 0}.spacer{flex:1}#status{white-space:pre-wrap;font-size:13px}.hidden{display:none}label{cursor:pointer}@media(max-width:760px){main{display:block;height:auto}aside{max-height:35vh}#canvas{height:45vh}}</style></head><body>
-<header><h2>Therion · kontrola kresby</h2><small id="root"></small></header><main><aside><div class="toolbar"><button onclick="rescan()">Znovu prohledat</button><span id="count"></span></div><input id="filter" placeholder="Hledat soubor, scrap, ID…" style="width:100%;padding:8px" oninput="renderList()"><div class="toolbar"><select id="kind" onchange="renderList()"><option value="">Všechny nálezy</option><option value="dup">Duplicitní body</option><option value="loop">Smyčky</option><option value="open">Chybějící uzavření</option><option value="merge">Přesné návaznosti</option><option value="near">Blízké konce</option></select><select id="decisionFilter" onchange="renderList()"><option value="">Všechna rozhodnutí</option><option value="fix">Ke změně</option><option value="later">Neprohlédnuté</option><option value="skip">Přeskočené</option></select></div><div id="list"></div></aside><section><div class="panel"><strong id="heading">Vyber nález vlevo</strong><p class="meta" id="detail"></p><div class="toolbar"><label><input type="checkbox" id="surround" checked onchange="draw()"> Okolní čáry</label><button onclick="zoom(0.6)">+ Přiblížit</button><button onclick="zoom(1.6)">− Oddálit</button><button onclick="resetView()">Vycentrovat</button><button onclick="fullScrap()">Celý scrap</button></div><svg id="canvas" viewBox="0 0 900 550" xmlns="http://www.w3.org/2000/svg"></svg><p class="meta">Červená: původní čára · zelená přerušovaná: návrh opravy Bézierovy smyčky · tyrkysová přerušovaná: navržené uzavření · šedá: okolí · oranžová: táhla Bézierových křivek · červený kroužek: nález. Posouvání tažením myši, zoom kolečkem.</p><div class="toolbar"><button onclick="choose('skip')">Přeskočit</button><button onclick="choose('later')">Později</button><button id="fix" class="primary" onclick="choose('fix')">Schválit odstranění bodu</button><span id="decision"></span></div></div><div class="panel"><strong>Hromadné opravy</strong><p class="meta">Uzavření je povoleno jen při přesné shodě prvního a posledního bodu. Zkontroluj náhled před schválením. U sousedních shodných bodů lze odstranit i celý Bézierův segment tvořící smyčku. Její tvar se tím změní; schvaluj jednotlivě.</p><div class="toolbar"><button onclick="exportCsv()">Export CSV</button><button onclick="showPlan()">Zobrazit plán změn</button><button class="danger" onclick="apply()">Zálohovat a provést schválené změny</button></div><div id="status"></div></div></section></main>
+<header><h2>Therion · kontrola kresby</h2><small id="root"></small></header><main><aside><div class="toolbar"><button onclick="rescan()">Znovu prohledat</button><span id="count"></span><small id="repairCount" class="meta"></small></div><input id="filter" placeholder="Hledat soubor, scrap, ID…" style="width:100%;padding:8px" oninput="renderList()"><div class="toolbar"><select id="kind" onchange="renderList()"><option value="">Všechny nálezy</option><option value="dup">Duplicitní body</option><option value="loop">Smyčky</option><option value="open">Chybějící uzavření</option><option value="merge">Přesné návaznosti (dvojice)</option><option value="chain">Celé řetězce</option><option value="near">Blízké konce</option></select><select id="repairFilter" onchange="renderList()"><option value="">Všechny možnosti</option><option value="safe">Lze opravit</option><option value="review">Pouze kontrola</option></select><select id="decisionFilter" onchange="renderList()"><option value="">Všechna rozhodnutí</option><option value="fix">Ke změně</option><option value="later">Neprohlédnuté</option><option value="skip">Přeskočené</option></select></div><div id="list"></div></aside><section><div class="panel"><strong id="heading">Vyber nález vlevo</strong><p class="meta" id="detail"></p><div class="toolbar"><label><input type="checkbox" id="surround" checked onchange="draw()"> Okolní čáry</label><button onclick="zoom(0.6)">+ Přiblížit</button><button onclick="zoom(1.6)">− Oddálit</button><button onclick="resetView()">Vycentrovat</button><button onclick="fullScrap()">Celý scrap</button></div><svg id="canvas" viewBox="0 0 900 550" xmlns="http://www.w3.org/2000/svg"></svg><p class="meta">Červená: původní čára · zelená přerušovaná: návrh opravy Bézierovy smyčky · tyrkysová přerušovaná: navržené uzavření · šedá: okolí · oranžová: táhla Bézierových křivek · červený kroužek: nález. Posouvání tažením myši, zoom kolečkem.</p><div class="toolbar"><button onclick="choose('skip')">Přeskočit</button><button onclick="choose('later')">Později</button><button id="fix" class="primary" onclick="choose('fix')">Schválit odstranění bodu</button><span id="decision"></span></div></div><div class="panel"><strong>Hromadné opravy</strong><p class="meta">Uzavření je povoleno jen při přesné shodě prvního a posledního bodu. Zkontroluj náhled před schválením. U sousedních shodných bodů lze odstranit i celý Bézierův segment tvořící smyčku. Její tvar se tím změní; schvaluj jednotlivě.</p><div class="toolbar"><button onclick="exportCsv()">Export CSV</button><button onclick="showPlan()">Zobrazit plán změn</button><button class="danger" onclick="apply()">Zálohovat a provést schválené změny</button></div><div id="status"></div></div></section></main>
 <script>
 let data=[], decisions={}, selected=null, shapes=[], view=null, full=false, dragging=null;
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function api(path,body){let r=await fetch(path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});let v=await r.json();if(!r.ok)throw Error(v.error||r.status);return v}
-async function init(){let r=await api('/api/scan');data=r.findings;$('root').textContent=r.root+' · '+r.files+' souborů';$('count').textContent=data.length+' nálezů';try{decisions=JSON.parse(localStorage.getItem('therion_decisions_'+r.root)||'{}')}catch(e){}for(let f of data){if(!f.safe)delete decisions[f.id]}renderList();if(data.length)selectItem(data[0].id);if(r.errors.length)$('status').textContent=r.errors.join('\n')}
+async function init(){let r=await api('/api/scan');data=r.findings;$('root').textContent=r.root+' · '+r.files+' souborů';$('count').textContent=data.length+' nálezů';$('repairCount').textContent=data.filter(f=>f.safe).length+' opravitelných / '+data.filter(f=>!f.safe).length+' ke kontrole';try{decisions=JSON.parse(localStorage.getItem('therion_decisions_'+r.root)||'{}')}catch(e){}for(let f of data){if(!f.safe)delete decisions[f.id]}renderList();if(data.length)selectItem(data[0].id);if(r.errors.length)$('status').textContent=r.errors.join('\n')}
 function save(){localStorage.setItem('therion_decisions_'+$('root').textContent.split(' · ')[0],JSON.stringify(decisions))}
-function renderList(){let q=$('filter').value.toLowerCase(),k=$('kind').value,d=$('decisionFilter').value;let arr=data.filter(f=>(!k||f.kind===k)&&(!d||(decisions[f.id]||'later')===d)&&(!q||[f.file,f.scrap,f.line_id,f.type,f.row].join(' ').toLowerCase().includes(q)));$('list').innerHTML=arr.map(f=>`<div class="entry ${selected===f.id?'active':''}" onclick="selectItem('${f.id}')"><strong>${f.kind==='dup'?'Duplicitní bod':f.kind==='open'?'Chybí uzavření':f.kind==='merge'?'Sloučení čar':f.kind==='near'?'Blízké konce':'Smyčka'} <span class="pill">${esc(decisions[f.id]||'později')}</span></strong><div class="meta">${esc(f.file)}<br>${esc(f.scrap)} · ${esc(f.type)} ${esc(f.line_id)} · ř. ${f.row}${f.first_row?' / '+f.first_row:''}</div><small class="${f.safe?'good':'warn'}">${f.kind==='open'?'Možnost uzavřít':f.kind==='near'?'Odchylka '+f.gap+' (jen kontrola)':f.kind==='merge'?(f.safe?'Lze schválit sloučení':'Pouze kontrola sloučení'):f.safe?'Lze schválit':'Pouze kontrola'}</small></div>`).join('')||'<p>Žádné nálezy.</p>'}
-async function selectItem(id){selected=id;let f=data.find(x=>x.id===id);if(!f)return;full=false;$('heading').textContent=(f.kind==='dup'?'Duplicitní bod':f.kind==='open'?'Chybí uzavření':f.kind==='merge'?'Přesná návaznost':f.kind==='near'?'Blízké konce':'Bézierova smyčka')+' · '+f.type+' '+(f.line_id||'bez ID');$('detail').textContent=f.file+' · scrap '+f.scrap+' · line řádek '+f.start+' · nález řádek '+f.row+(f.first_row?' / '+f.first_row:'')+' · XY '+f.x+', '+f.y+' · -close '+f.close_setting+' · '+(f.reason||'')+' · koncové body '+(f.endpoints_equal?'shodné':'rozdílné')+(f.gap!==undefined?' · odchylka '+f.gap:'');$('fix').disabled=!f.safe;$('fix').textContent=f.kind==='open'?'Schválit uzavření (-close on)':f.kind==='merge'?'Schválit sloučení':f.kind==='loop'?'Schválit navrženou opravu smyčky':'Schválit odstranění bodu / smyčky';$('decision').textContent='Rozhodnutí: '+(decisions[id]||'později');view=null;await draw();renderList()}
-async function draw(){let f=data.find(x=>x.id===selected);if(!f)return;shapes=await api('/api/preview',{id:f.id,scope:full?'all':$('surround').checked?'near':'line'});if(!view)resetView();renderSvg()}
+function affected(f){return f.kind==='chain'?f.chain_keys:(f.kind==='merge'?[f.shape_key,f.other_key]:[f.shape_key])}
+function conflicts(f){if(!f.safe)return [];let mine=affected(f);return data.filter(o=>o.id!==f.id&&decisions[o.id]==='fix'&&(['merge','chain'].includes(f.kind)||['merge','chain'].includes(o.kind))&&affected(o).some(k=>mine.includes(k))).map(o=>o)}
+function conflictLabel(f){let c=conflicts(f);return c.length?'Konflikt se schváleným návrhem: '+c.map(o=>o.kind==='chain'?'řetězec '+o.start:o.kind+' ř. '+o.start).join(', '):''}
+function renderList(){let q=$('filter').value.toLowerCase(),k=$('kind').value,d=$('decisionFilter').value,repair=$('repairFilter').value;let arr=data.filter(f=>(!k||f.kind===k)&&(!repair||(repair==='safe'?f.safe:!f.safe))&&(!d||(decisions[f.id]||'later')===d)&&(!q||[f.file,f.scrap,f.line_id,f.type,f.row].join(' ').toLowerCase().includes(q)));$('list').innerHTML=arr.map(f=>`<div class="entry ${selected===f.id?'active':''}" onclick="selectItem('${f.id}')"><strong>${f.kind==='dup'?'Duplicitní bod':f.kind==='open'?'Chybí uzavření':f.kind==='merge'?'Sloučení čar':f.kind==='chain'?'Sloučení řetězce':f.kind==='near'?'Blízké konce':'Smyčka'} <span class="pill">${esc(decisions[f.id]||'později')}</span></strong><div class="meta">${esc(f.file)}<br>${esc(f.scrap)} · ${esc(f.type)} ${esc(f.line_id)} · ř. ${f.row}${f.first_row?' / '+f.first_row:''}</div><small class="${f.safe&&!conflicts(f).length?'good':'warn'}">${f.kind==='open'?'Možnost uzavřít':f.kind==='near'?'Odchylka '+f.gap+' (jen kontrola)':f.kind==='chain'?'Řetězec '+f.chain_keys.length+' čar':f.kind==='merge'?(f.safe?'Lze schválit sloučení':'Pouze kontrola sloučení'):f.safe?'Lze schválit':'Pouze kontrola'}${conflictLabel(f)?'<br>'+esc(conflictLabel(f)):''}</small></div>`).join('')||'<p>Žádné nálezy.</p>'}
+async function selectItem(id){selected=id;let f=data.find(x=>x.id===id);if(!f)return;full=false;$('heading').textContent=(f.kind==='dup'?'Duplicitní bod':f.kind==='open'?'Chybí uzavření':f.kind==='merge'?'Přesná návaznost':f.kind==='chain'?'Celý řetězec':f.kind==='near'?'Blízké konce':'Bézierova smyčka')+' · '+f.type+' '+(f.line_id||'bez ID');$('detail').textContent=(f.kind==='chain'?'Řetězec '+f.chain_keys.length+' čar · ':'')+f.file+' · scrap '+f.scrap+' · line řádek '+f.start+' · nález řádek '+f.row+(f.first_row?' / '+f.first_row:'')+' · XY '+f.x+', '+f.y+' · -close '+f.close_setting+' · '+(f.reason||'')+' · koncové body '+(f.endpoints_equal?'shodné':'rozdílné')+(f.gap!==undefined?' · odchylka '+f.gap:'');$('fix').disabled=!f.safe||conflicts(f).length>0;$('fix').textContent=f.kind==='open'?'Schválit uzavření (-close on)':f.kind==='merge'?'Schválit sloučení':f.kind==='chain'?'Schválit celý řetězec ('+f.chain_keys.length+' čar)':f.kind==='loop'?'Schválit navrženou opravu smyčky':'Schválit odstranění bodu / smyčky';$('decision').textContent='Rozhodnutí: '+(decisions[id]||'později')+(conflictLabel(f)?' · '+conflictLabel(f):'');view=null;await draw();renderList()}
+async function draw(){let f=data.find(x=>x.id===selected);if(!f)return;shapes=await api('/api/preview',{id:f.id,scope:full?'all':f.kind==='chain'?'line':$('surround').checked?'near':'line'});if(!view){if(f.kind==='chain'&&shapes.length){let pts=shapes.flatMap(x=>x.segments.flatMap(z=>z.points));if(pts.length){let xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]);let x=Math.min(...xs),y=Math.min(...ys),w=Math.max(30,Math.max(...xs)-x),h=Math.max(20,Math.max(...ys)-y);view={x:x-w*.15,y:y-h*.15,w:w*1.3,h:h*1.3}}else resetView()}else resetView()}renderSvg()}
 function resetView(){let f=data.find(x=>x.id===selected);if(!f)return;view={x:f.x-160,y:f.y-98,w:320,h:196};renderSvg()}
 function fullScrap(){full=true;view=null;api('/api/preview',{id:selected,scope:'all'}).then(s=>{shapes=s;let pts=s.flatMap(x=>x.segments.flatMap(z=>z.points));if(pts.length){let xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]),xmin=Math.min(...xs),xmax=Math.max(...xs),ymin=Math.min(...ys),ymax=Math.max(...ys);let w=Math.max(30,xmax-xmin),h=Math.max(20,ymax-ymin);view={x:xmin-w*.08,y:ymin-h*.08,w:w*1.16,h:h*1.16}}renderSvg()})}
-function renderSvg(){if(!view)return;let f=data.find(x=>x.id===selected);let svg=$('canvas');let {x,y,w,h}=view;let aspect=900/550;if(w/h>aspect){let nh=w/aspect;y-=(nh-h)/2;h=nh}else{let nw=h*aspect;x-=(nw-w)/2;w=nw}view={x,y,w,h};let xx=p=>(900*(p[0]-x)/w).toFixed(2),yy=p=>(550-550*(p[1]-y)/h).toFixed(2);let out='';for(let s of shapes){for(let seg of s.segments){let p=seg.points;if(p.length<2)continue;out+=`<polyline points="${p.map(q=>xx(q)+','+yy(q)).join(' ')}" fill="none" stroke="${s.selected?'#d63135':s.other?'#1485c5':'#a8b0b9'}" stroke-width="${s.selected||s.other?3:1.4}" stroke-linejoin="round"/>`;if(s.selected&&seg.handles){let c=seg.handles;for(let pair of [[c[0],c[1]],[c[2],c[3]]])out+=`<line x1="${xx(pair[0])}" y1="${yy(pair[0])}" x2="${xx(pair[1])}" y2="${yy(pair[1])}" stroke="#dc9b32" stroke-width="1" stroke-dasharray="4 3"/>`;for(let q of [c[1],c[2]])out+=`<circle cx="${xx(q)}" cy="${yy(q)}" r="3" fill="#dc9b32"/>`}}}if(f.kind==='loop' && f.proposed_points){let p=f.proposed_points;let ps=[];for(let j=0;j<=80;j++){let t=j/80,u=1-t;ps.push([u*u*u*p[0][0]+3*u*u*t*p[1][0]+3*u*t*t*p[2][0]+t*t*t*p[3][0],u*u*u*p[0][1]+3*u*u*t*p[1][1]+3*u*t*t*p[2][1]+t*t*t*p[3][1]])}out+=`<polyline points="${ps.map(q=>xx(q)+','+yy(q)).join(' ')}" fill="none" stroke="#0e9b65" stroke-width="3.5" stroke-dasharray="7 3"/>`;}if(f.kind==='near'){let a=f.first_point,b=f.last_point;out+=`<line x1="${xx(a)}" y1="${yy(a)}" x2="${xx(b)}" y2="${yy(b)}" stroke="#e7a02d" stroke-width="3" stroke-dasharray="4 3"/>`}if(f.kind==='open'){let sh=shapes.find(q=>q.selected);if(sh&&sh.endpoints.length===2){let a=sh.endpoints[0],b=sh.endpoints[1];out+=`<line x1="${xx(a)}" y1="${yy(a)}" x2="${xx(b)}" y2="${yy(b)}" stroke="#0d9488" stroke-width="3" stroke-dasharray="8 5"/>`}}out+=`<circle cx="${xx([f.x,f.y])}" cy="${yy([f.x,f.y])}" r="10" fill="none" stroke="#d63135" stroke-width="2.5"/><circle cx="${xx([f.x,f.y])}" cy="${yy([f.x,f.y])}" r="2.5" fill="#d63135"/>`;svg.innerHTML=out}
+function renderSvg(){if(!view)return;let f=data.find(x=>x.id===selected);let svg=$('canvas');let {x,y,w,h}=view;let aspect=900/550;if(w/h>aspect){let nh=w/aspect;y-=(nh-h)/2;h=nh}else{let nw=h*aspect;x-=(nw-w)/2;w=nw}view={x,y,w,h};let xx=p=>(900*(p[0]-x)/w).toFixed(2),yy=p=>(550-550*(p[1]-y)/h).toFixed(2);let out='';for(let s of shapes){for(let seg of s.segments){let p=seg.points;if(p.length<2)continue;out+=`<polyline points="${p.map(q=>xx(q)+','+yy(q)).join(' ')}" fill="none" stroke="${f.kind==='chain'&&s.chain_index>=0?['#d63135','#1485c5','#16a085','#c08427','#8b5cf6'][s.chain_index%5]:s.selected?'#d63135':s.other?'#1485c5':'#a8b0b9'}" stroke-width="${s.selected||s.other?3:1.4}" stroke-linejoin="round"/>`;if(s.selected&&seg.handles){let c=seg.handles;for(let pair of [[c[0],c[1]],[c[2],c[3]]])out+=`<line x1="${xx(pair[0])}" y1="${yy(pair[0])}" x2="${xx(pair[1])}" y2="${yy(pair[1])}" stroke="#dc9b32" stroke-width="1" stroke-dasharray="4 3"/>`;for(let q of [c[1],c[2]])out+=`<circle cx="${xx(q)}" cy="${yy(q)}" r="3" fill="#dc9b32"/>`}}}if(f.kind==='loop' && f.proposed_points){let p=f.proposed_points;let ps=[];for(let j=0;j<=80;j++){let t=j/80,u=1-t;ps.push([u*u*u*p[0][0]+3*u*u*t*p[1][0]+3*u*t*t*p[2][0]+t*t*t*p[3][0],u*u*u*p[0][1]+3*u*u*t*p[1][1]+3*u*t*t*p[2][1]+t*t*t*p[3][1]])}out+=`<polyline points="${ps.map(q=>xx(q)+','+yy(q)).join(' ')}" fill="none" stroke="#0e9b65" stroke-width="3.5" stroke-dasharray="7 3"/>`;}if(f.kind==='near'){let a=f.first_point,b=f.last_point;out+=`<line x1="${xx(a)}" y1="${yy(a)}" x2="${xx(b)}" y2="${yy(b)}" stroke="#e7a02d" stroke-width="3" stroke-dasharray="4 3"/>`}if(f.kind==='open'){let sh=shapes.find(q=>q.selected);if(sh&&sh.endpoints.length===2){let a=sh.endpoints[0],b=sh.endpoints[1];out+=`<line x1="${xx(a)}" y1="${yy(a)}" x2="${xx(b)}" y2="${yy(b)}" stroke="#0d9488" stroke-width="3" stroke-dasharray="8 5"/>`}}out+=`<circle cx="${xx([f.x,f.y])}" cy="${yy([f.x,f.y])}" r="10" fill="none" stroke="#d63135" stroke-width="2.5"/><circle cx="${xx([f.x,f.y])}" cy="${yy([f.x,f.y])}" r="2.5" fill="#d63135"/>`;svg.innerHTML=out}
 function zoom(f){if(!view)return;let cx=view.x+view.w/2,cy=view.y+view.h/2;view={x:cx-view.w*f/2,y:cy-view.h*f/2,w:view.w*f,h:view.h*f};renderSvg()}
 $('canvas').addEventListener('wheel',e=>{e.preventDefault();zoom(e.deltaY<0?.8:1.25)},{passive:false});$('canvas').addEventListener('pointerdown',e=>{dragging={x:e.clientX,y:e.clientY,v:{...view}};$('canvas').setPointerCapture(e.pointerId)});$('canvas').addEventListener('pointermove',e=>{if(!dragging)return;let r=$('canvas').getBoundingClientRect();view={...dragging.v,x:dragging.v.x-(e.clientX-dragging.x)*dragging.v.w/r.width,y:dragging.v.y+(e.clientY-dragging.y)*dragging.v.h/r.height};renderSvg()});$('canvas').addEventListener('pointerup',()=>dragging=null);
-function choose(v){if(!selected)return;let f=data.find(x=>x.id===selected);if(v==='fix'&&!f.safe)return;decisions[selected]=v;save();$('decision').textContent='Rozhodnutí: '+v;renderList()}
+function choose(v){if(!selected)return;let f=data.find(x=>x.id===selected);if(v==='fix'&&(!f.safe||conflicts(f).length)){ $('status').textContent=conflictLabel(f)||'Oprava není povolena';return;}decisions[selected]=v;save();$('decision').textContent='Rozhodnutí: '+v;renderList();if(v==='fix')selectItem(selected)}
 function selectedFixes(){return data.filter(f=>f.safe&&decisions[f.id]==='fix').map(f=>f.id)}
 function showPlan(){let a=data.filter(f=>selectedFixes().includes(f.id));$('status').textContent=a.length?`Připraveno ${a.length} schválených změn v ${new Set(a.map(f=>f.file)).size} souborech:\n`+a.map(f=>f.file+' · ř. '+f.row).join('\n'):'Žádné schválené bezpečné opravy.'}
 async function apply(){let ids=selectedFixes();if(!ids.length){$('status').textContent='Žádné schválené bezpečné opravy.';return}if(!confirm(`Zálohovat a změnit ${ids.length} nálezů? Změny se provedou přímo v původních souborech.`))return;try{let r=await api('/api/apply',{ids});$('status').textContent=JSON.stringify(r,null,2);decisions={};save();await init()}catch(e){$('status').textContent='CHYBA: '+e.message}}
@@ -237,7 +275,7 @@ class Handler(BaseHTTPRequestHandler):
             if route=='/api/preview':
                 f=next((f for o in CACHE.values() for f in o['findings'] if f['id']==req['id']),None)
                 if not f:raise ValueError('Nález nebyl nalezen')
-                self.respond(200,preview(f['file'],f['shape_key'],f['x'],f['y'],req.get('scope','near'),f.get('other_key')))
+                self.respond(200,preview(f['file'],f['shape_key'],f['x'],f['y'],req.get('scope','near'),f.get('other_key'),f.get('chain_keys')))
             elif route=='/api/apply':self.respond(200,apply_fixes(req['ids']))
             else:self.respond(404,{'error':'Neznámý požadavek'})
         except Exception as e:self.respond(400,{'error':str(e)})
@@ -249,14 +287,14 @@ def apply_fixes(ids):
     chosen=[]
     for id in set(ids):
         f=byid.get(id)
-        if f is None or f['kind'] not in ('dup','open','merge','loop') or not f['safe']:raise ValueError('Nález není povoleno automaticky opravit: '+str(id))
+        if f is None or f['kind'] not in ('dup','open','merge','chain','loop') or not f['safe']:raise ValueError('Nález není povoleno automaticky opravit: '+str(id))
         chosen.append(f)
-    # A line may participate in only one merge in a single batch. Another
-    # change on a merged line must be rescanned after the merge.
-    merged_keys=[key for f in chosen if f['kind']=='merge' for key in (f['shape_key'],f['other_key'])]
+    # A line may participate in exactly one selected merge operation.
+    merged_keys=[key for f in chosen if f['kind'] in ('merge','chain')
+                 for key in (f['chain_keys'] if f['kind']=='chain' else (f['shape_key'],f['other_key']))]
     if len(merged_keys)!=len(set(merged_keys)):
-        raise ValueError('Konfliktní návrhy sloučení; vyber pouze jednu návaznost na čáru')
-    if any(f['shape_key'] in merged_keys for f in chosen if f['kind']!='merge'):
+        raise ValueError('Konfliktní slučování: jedna čára patří do více schválených návrhů')
+    if any(f['shape_key'] in merged_keys for f in chosen if f['kind'] not in ('merge','chain')):
         raise ValueError('Sloučení a další opravy téže čáry proveď v oddělených dávkách')
     segment_targets=[(f['shape_key'],f['row']) for f in chosen if f['kind'] in ('dup','loop')]
     if len(segment_targets)!=len(set(segment_targets)):
@@ -271,37 +309,43 @@ def apply_fixes(ids):
         original=path.read_bytes();obj=CACHE[rel]
         if hashlib.sha256(original).hexdigest()!=obj['hash']:raise ValueError('Soubor se mezitím změnil, spusť novou kontrolu: '+rel)
         lines=obj['lines'][:]
-        # Apply merges on immutable original ranges, leaving everything between
-        # disjoint line blocks untouched. Every merge anchors at the A position.
+        # All source ranges refer to the untouched parse; perform atomic group edits.
         occupied=set()
         for f in fs:
-            if f['kind']!='merge':continue
-            a=next(sh for sh in obj['shapes'] if sh['key']==f['shape_key'])
-            b=next(sh for sh in obj['shapes'] if sh['key']==f['other_key'])
-            ia=set(range(a['start'],a['end']+1))
-            ib=set(range(b['start'],b['end']+1))
-            if ia & ib or (ia|ib) & occupied:raise ValueError('Překryv slučovaných bloků')
-            occupied |= ia|ib
-            if (not f['safe'] or a['header'].split()!=b['header'].split() or
-                a['nodes'][-1]['p']!=b['nodes'][0]['p'] or a['id'] or b['id']):
-                raise ValueError('Nekompatibilní čáry pro sloučení')
+            if f['kind'] not in ('merge','chain'):continue
+            keys=f['chain_keys'] if f['kind']=='chain' else [f['shape_key'],f['other_key']]
+            members=[next(sh for sh in obj['shapes'] if sh['key']==k) for k in keys]
+            if len(members)<2 or len(set(keys))!=len(keys):raise ValueError('Neplatný řetězec')
+            reference=members[0]
+            for i,sh in enumerate(members):
+                rows=set(range(sh['start'],sh['end']+1))
+                if rows & occupied:raise ValueError('Překryv slučovaných bloků')
+                occupied |= rows
+                if sh['header'].split()!=reference['header'].split() or sh['id'] or '-reverse' in sh['header'].split():
+                    raise ValueError('Nekompatibilní atributy')
+                if sh['scrap_index']!=reference['scrap_index']:
+                    raise ValueError('Čáry z různých scrapů')
+                if i and members[i-1]['nodes'][-1]['p']!=sh['nodes'][0]['p']:
+                    raise ValueError('Návaznost už není platná')
             def body_coords(sh):
-                body=lines[sh['start']:sh['end']-1]
+                body=obj['lines'][sh['start']:sh['end']-1]
                 if len(body)!=len(sh['nodes']):
-                    raise ValueError('Čára obsahuje direktivy či komentáře, vyžaduje ruční sloučení')
+                    raise ValueError('Čára obsahuje direktivy či komentáře')
                 for line in body:
                     tokens=line.split('#',1)[0].split()
                     if '#' in line or len(tokens) not in (2,6):
-                        raise ValueError('Vnitřní atributy nebo komentáře brání sloučení')
+                        raise ValueError('Nejednoznačné vnitřní atributy')
                 return body
-            parta=body_coords(a)
-            partb=body_coords(b)
-            newline='\r\n' if lines[a['start']-1].endswith('\r\n') else '\n'
-            lines[a['start']-1]=''.join([obj['lines'][a['start']-1]]+parta+partb[1:]+['endline'+newline])
-            for row in range(a['start']+1,a['end']+1):lines[row-1]=''
-            for row in range(b['start'],b['end']+1):lines[row-1]=''
+            joined=[obj['lines'][reference['start']-1]]+body_coords(reference)
+            for sh in members[1:]:joined+=body_coords(sh)[1:]
+            newline='\r\n' if obj['lines'][reference['start']-1].endswith('\r\n') else '\n'
+            joined+=['endline'+newline]
+            lines[reference['start']-1]=''.join(joined)
+            for sh in members:
+                for row in range(sh['start'],sh['end']+1):
+                    if row!=reference['start']:lines[row-1]=''
         for f in fs:
-            if f['kind']=='merge':continue
+            if f['kind'] in ('merge','chain'):continue
             if f['kind']=='open':
                 row=f['start']
                 # Existing -close option can appear on a separate line inside the line block.
@@ -340,7 +384,7 @@ def apply_fixes(ids):
     folder.mkdir(parents=True,exist_ok=False)
     for path,rel,original,new,fs in changes:
         dest=folder/rel;dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(original)
-    log={'created':datetime.now().isoformat(),'root':str(ROOT),'changes':[{'file':rel,'rows_removed':[f['row'] for f in fs if f['kind']=='dup'],'lines_closed':[f['start'] for f in fs if f['kind']=='open'],'merged_lines':[[f['start'],f['row']] for f in fs if f['kind']=='merge'],'curves_adjusted':[f['row'] for f in fs if f['kind']=='loop']} for _,rel,_,_,fs in changes]}
+    log={'created':datetime.now().isoformat(),'root':str(ROOT),'changes':[{'file':rel,'rows_removed':[f['row'] for f in fs if f['kind']=='dup'],'lines_closed':[f['start'] for f in fs if f['kind']=='open'],'merged_lines':[[f['start'],f['row']] for f in fs if f['kind']=='merge'],'merged_chains':[[k for k in f['chain_keys']] for f in fs if f['kind']=='chain'],'curves_adjusted':[f['row'] for f in fs if f['kind']=='loop']} for _,rel,_,_,fs in changes]}
     (folder/'protokol.json').write_text(json.dumps(log,ensure_ascii=False,indent=2),encoding='utf-8')
     written=[]
     try:
@@ -349,7 +393,7 @@ def apply_fixes(ids):
     except Exception:
         for path,original in written:path.write_bytes(original)
         raise
-    return {'upraveno_souboru':len(changes),'odstraneno_bodu_a_smycek':sum(f['kind']=='dup' for f in chosen),'uzavreno_car':sum(f['kind']=='open' for f in chosen),'slouceno_dvojic':sum(f['kind']=='merge' for f in chosen),'opraveno_krivkovych_smycek':sum(f['kind']=='loop' for f in chosen),'zaloha':str(folder),'protokol':str(folder/'protokol.json')}
+    return {'upraveno_souboru':len(changes),'odstraneno_bodu_a_smycek':sum(f['kind']=='dup' for f in chosen),'uzavreno_car':sum(f['kind']=='open' for f in chosen),'slouceno_dvojic':sum(f['kind']=='merge' for f in chosen),'slouceno_retezcu':sum(f['kind']=='chain' for f in chosen),'opraveno_krivkovych_smycek':sum(f['kind']=='loop' for f in chosen),'zaloha':str(folder),'protokol':str(folder/'protokol.json')}
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('folder',nargs='?',default='.');p.add_argument('--port',type=int,default=0);p.add_argument('--tolerance',type=float,default=.15);p.add_argument('--near',type=float,default=1.0);args=p.parse_args()
