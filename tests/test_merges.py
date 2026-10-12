@@ -1,10 +1,12 @@
 """Run: python -m unittest discover -s tests -v"""
 import importlib.util
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(BASE))
 spec = importlib.util.spec_from_file_location('therion_kontrola', BASE / 'therion_kontrola.py')
 app = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(app)
