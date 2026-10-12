@@ -1,51 +1,41 @@
-# Therion TH2 Inspector (vývojová verze 5)
+# Therion TH2 Inspector – verze 6 (experimentální)
 
-Lokální nástroj pro kontrolu `.th2` kresby v prohlížeči. Vyžaduje Python 3.9+; nepoužívá externí balíčky. Není oficiálním projektem Therionu.
+Lokální Python/HTML kontrola a schvalování vybraných oprav souborů `.th2`. Není oficiální součástí Therionu.
 
-## Windows
+## Spuštění na Windows
 
-Rozbal ZIP a spusť `SPUSTIT_KONTROLU.bat`; případně:
+1. Rozbal ZIP do jedné složky.
+2. Spusť `SPUSTIT_KONTROLU.bat`, zadej cestu k adresáři mapy.
+3. V prohlížeči se otevře lokální server `127.0.0.1`.
+4. Zkontroluj nálezy a náhled. **Zelená přerušovaná křivka** ukazuje návrh změny Bézierových táhel.
+5. U každé změny klikni na „Schválit“. Před zápisem zvol „Zobrazit plán změn“ a „Zálohovat a provést schválené změny“.
 
-```bat
-py therion_kontrola.py "D:\Jeskyne" --near 1.0
-```
+Alternativně `py therion_kontrola.py "C:\\mapy\\jeskyne" --near 1.0`.
 
-Otevře se lokální web na `127.0.0.1` (bez přístupu z internetu). Procházej nálezy, schval změny, klikni na **Zobrazit plán změn** a až pak na **Zálohovat a provést schválené změny**.
+## Co umí
 
-## Co se kontroluje
+- Duplicitní body: přímý nulový úsek lze odstranit také bezprostředně po Bézierově segmentu. Malou uzavřenou Bézierovu smyčku lze odstranit jako celý segment při maximální vzdálenosti obou táhel do 30 jednotek od shodného koncového bodu. Nesousedící duplicity zůstávají pouze ke kontrole.
+- Samoprotínající se jeden Bézierův segment: nabídne alternativní křivku postupným přibližováním řídicích bodů k přímému spojení koncových bodů. Původní čára červeně, návrh zeleně přerušovaně. **Jde o geometrický návrh, nikoliv doklad vhodnosti pro mapu.** Schválením se mění pouze řídicí body (první čtyři hodnoty šestice); koncový bod zůstává beze změny.
+- Chybějící `-close on`: pouze u `chimney`, `pit`, `border`, `rock-border` se přesně shodnými počátečními a koncovými souřadnicemi.
+- Sloučení čar: pro přímou přesnou návaznost **konec A → začátek B**, stejné celé hlavičky `line`, stejný scrap, bez větvení, ID, `-reverse` a bez vnitřních direktiv/komentářů. Obě čáry mohou být vzdálené v souboru nebo zapsané v opačném pořadí. Nástroj přesune do výsledné čáry geometrii druhé čáry beze změny Bézierových táhel, její definici odstraní; ostatní čáry mezi nimi zůstanou. Pokud nějaká podmínka neplatí, ukáže pouze upozornění.
+- Téměř navazující čáry (nenulová mezera): pouze kontrola, bez automatických oprav.
 
-- Samoprotínání uvnitř jednoho Bézierova segmentu (numerické přiblížení).
-- Duplicitní koncové body jedné čáry; `-close on` toleruje shodu prvního a posledního bodu.
-- `chimney`, `pit`, `border`, `rock-border`: chybějící `-close on`, **jen pokud první a poslední bod mají přesně stejné souřadnice**.
-- `merge`: přesná návaznost konec A → začátek B v jednom scrapu, shodný typ a všechny parametry v hlavičce.
-- `near`: návaznost s malou odchylkou (výchozí 1 souřadnicová jednotka, lze nastavit `--near`); **pouze upozornění**.
+**Před automatickým sloučením zkontroluj směr a typ:** návrhy vyžadující otočení čáry, `-reverse`, jiné atributy, samostatná ID nebo vnitřní direktivy nejsou automaticky schvalovatelné.
 
-## Sloučení čar – pouze ruční návrhy
+## Zálohování a omezení
 
-Nástroj zobrazuje přesně navazující čáry a blízké koncové body. **V této verzi žádné sloučení neprovádí**, a to ani přes API. Při ručním sloučení zkontroluj směrové parametry jako `-reverse`, direktivy `smooth` a případné reference na ID. Návrhy hledají primárně konec → začátek; nejde o úplný analyzátor všech variant orientace.
+Před úpravou originálů se vytvoří `_Therion_zalohy/<čas>/` s kopií **pouze měněných souborů** a `protokol.json`. Soubory, které se změnily od posledního prohledání, se neupraví. Záloha a adresáře `data` se při skenování ignorují (bez ohledu na velikost písmen).
 
-## Zálohování
+Nástroj neodhalí všechny možné příčiny hlášení „scrap outline intersects itself“. Návrhy oprav samoprotínajících se segmentů mohou **viditelně změnit tvar stěny** a jsou určeny k pečlivému vizuálnímu schválení. Při první práci použij kopii celého projektu a výsledek ověř v Therionu.
 
-Před zápisem do originálů vznikne `_Therion_zalohy/<čas>/` s kopií **jen měněných souborů** a `protokol.json`. Při kontrole se ignorují všechny podsložky `Data` (bez ohledu na velikost písmen) a `_Therion_zalohy`.
+Hromadná dávka odmítne konfliktní sloučení (stejná čára ve více návrzích), překryv sloučení s další opravou dané čáry i vícenásobnou úpravu téhož segmentu. Po jednom sloučení spusť nové hledání pro další navazující dvojici.
 
-## Důležité
+## Testy
 
-Jde o vývojovou verzi: první dávku oprav ověř na kopii projektu a porovnej export Therionu. Nástroj nevyhodnocuje všechny konstrukce `.th2` a nezaručuje správnost všech automatických oprav pro libovolný soubor. Sloučení čar je vždy ruční.
+`py -m unittest discover -s tests -v`
 
-## Další vývoj
+Testována přesná a téměř přesná návaznost, spojení vzdálených definic, odmítnutí `-reverse` a vnitřních direktiv, duplicita po Bézierově segmentu, uzavření, záloha a smyčka na řádku 1399 dodaného souboru Škaredá chodba (fixture je volitelná).
 
-Doporučené úkoly: slučování vzdálených definic, obrácená orientace čar, detekce referencí na ID a rychlejší prostorový index pro rozsáhlé scrappy.
+## GitHub
 
-## Verze 4
-
-- Přesně navazující čáry se stejnou hlavičkou lze schválit ke sloučení i tehdy, pokud jsou v souboru vzdálené nebo zapsané v opačném pořadí než geometrická návaznost. Podporovány jsou interní direktivy `smooth on/off`; `-id` a ostatní interní direktivy stále blokují automatické sloučení.
-- Po sobě jdoucí stejný koncový bod lze odstranit i jako celý Bézierův segment se šesti souřadnicemi, pokud řídicí body leží nejvýše 30 jednotek od společného bodu. **Tím se úmyslně odstraní nakreslená smyčka.** Větší smyčky zůstávají jen ke kontrole.
-- Opravy se provádějí až po schválení a zálohování měněných originálů. Před použitím na hlavním projektu zkontroluj výsledek v Therionu.
-- Testy: `python -m unittest discover -s tests -v`.
-
-## Verze 5 – sloučení pouze ručně
-
-- Přesné návaznosti a blízké konce se nadále vyhledávají a vykreslují, ale **nelze schválit automatické sloučení**.
-- Server odmítne požadavek na sloučení i při přímém volání API; grafické tlačítko je deaktivované.
-- Opravy duplicitních bodů, malých Bézierových smyček a `-close on` zůstávají dostupné se zálohováním.
-- Směrové atributy jako `-reverse` musí při ručním sloučení zkontrolovat člověk.
+https://github.com/matls/therion-th2-inspector
