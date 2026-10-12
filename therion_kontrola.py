@@ -111,8 +111,7 @@ def find_joins(path,shapes):
                 if gap>NEAR:continue
                 exact=(end==start)
                 # No multiple choices at a shared endpoint; no IDs or internal directives.
-                safe=(exact and degree.get(tuple(end),0)==2 and a['simple'] and b['simple']
-                      and not a['id'] and not b['id'] and a['scrap'] == b['scrap'])
+                safe=False  # v5: vsechna slouceni pouze jako navrhy pro rucni upravu
                 # The original order is deliberately required to keep source edits simple.
                 uid=hashlib.sha1(f'{path}:{a["start"]}:{b["start"]}:join'.encode()).hexdigest()[:16]
                 result.append({'id':uid,'file':str(path.relative_to(ROOT)),'scrap':scrap,
@@ -156,10 +155,10 @@ HTML=r'''<!doctype html><html lang="cs"><head><meta charset="utf-8"><meta name="
 let data=[], decisions={}, selected=null, shapes=[], view=null, full=false, dragging=null;
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function api(path,body){let r=await fetch(path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});let v=await r.json();if(!r.ok)throw Error(v.error||r.status);return v}
-async function init(){let r=await api('/api/scan');data=r.findings;$('root').textContent=r.root+' · '+r.files+' souborů';$('count').textContent=data.length+' nálezů';try{decisions=JSON.parse(localStorage.getItem('therion_decisions_'+r.root)||'{}')}catch(e){}renderList();if(data.length)selectItem(data[0].id);if(r.errors.length)$('status').textContent=r.errors.join('\n')}
+async function init(){let r=await api('/api/scan');data=r.findings;for(let f of data){if(f.kind==='merge'||f.kind==='near')delete decisions[f.id]}$('root').textContent=r.root+' · '+r.files+' souborů';$('count').textContent=data.length+' nálezů';try{decisions=JSON.parse(localStorage.getItem('therion_decisions_'+r.root)||'{}')}catch(e){}renderList();if(data.length)selectItem(data[0].id);if(r.errors.length)$('status').textContent=r.errors.join('\n')}
 function save(){localStorage.setItem('therion_decisions_'+$('root').textContent.split(' · ')[0],JSON.stringify(decisions))}
-function renderList(){let q=$('filter').value.toLowerCase(),k=$('kind').value,d=$('decisionFilter').value;let arr=data.filter(f=>(!k||f.kind===k)&&(!d||(decisions[f.id]||'later')===d)&&(!q||[f.file,f.scrap,f.line_id,f.type,f.row].join(' ').toLowerCase().includes(q)));$('list').innerHTML=arr.map(f=>`<div class="entry ${selected===f.id?'active':''}" onclick="selectItem('${f.id}')"><strong>${f.kind==='dup'?'Duplicitní bod':f.kind==='open'?'Chybí uzavření':f.kind==='merge'?'Sloučení čar':f.kind==='near'?'Blízké konce':'Smyčka'} <span class="pill">${esc(decisions[f.id]||'později')}</span></strong><div class="meta">${esc(f.file)}<br>${esc(f.scrap)} · ${esc(f.type)} ${esc(f.line_id)} · ř. ${f.row}${f.first_row?' / '+f.first_row:''}</div><small class="${f.safe?'good':'warn'}">${f.kind==='open'?'Možnost uzavřít':f.kind==='near'?'Odchylka '+f.gap+' (jen kontrola)':f.safe?'Lze schválit':'Pouze kontrola'}</small></div>`).join('')||'<p>Žádné nálezy.</p>'}
-async function selectItem(id){selected=id;let f=data.find(x=>x.id===id);if(!f)return;full=false;$('heading').textContent=(f.kind==='dup'?'Duplicitní bod':f.kind==='open'?'Chybí uzavření':f.kind==='merge'?'Přesná návaznost':f.kind==='near'?'Blízké konce':'Bézierova smyčka')+' · '+f.type+' '+(f.line_id||'bez ID');$('detail').textContent=f.file+' · scrap '+f.scrap+' · line řádek '+f.start+' · nález řádek '+f.row+(f.first_row?' / '+f.first_row:'')+' · XY '+f.x+', '+f.y+' · -close '+f.close_setting+' · koncové body '+(f.endpoints_equal?'shodné':'rozdílné')+(f.gap!==undefined?' · odchylka '+f.gap:'');$('fix').disabled=!f.safe;$('fix').textContent=f.kind==='open'?'Schválit uzavření (-close on)':f.kind==='merge'?'Schválit sloučení':'Schválit odstranění bodu / smyčky';$('decision').textContent='Rozhodnutí: '+(decisions[id]||'později');view=null;await draw();renderList()}
+function renderList(){let q=$('filter').value.toLowerCase(),k=$('kind').value,d=$('decisionFilter').value;let arr=data.filter(f=>(!k||f.kind===k)&&(!d||(decisions[f.id]||'later')===d)&&(!q||[f.file,f.scrap,f.line_id,f.type,f.row].join(' ').toLowerCase().includes(q)));$('list').innerHTML=arr.map(f=>`<div class="entry ${selected===f.id?'active':''}" onclick="selectItem('${f.id}')"><strong>${f.kind==='dup'?'Duplicitní bod':f.kind==='open'?'Chybí uzavření':f.kind==='merge'?'Sloučení čar':f.kind==='near'?'Blízké konce':'Smyčka'} <span class="pill">${esc(decisions[f.id]||'později')}</span></strong><div class="meta">${esc(f.file)}<br>${esc(f.scrap)} · ${esc(f.type)} ${esc(f.line_id)} · ř. ${f.row}${f.first_row?' / '+f.first_row:''}</div><small class="${f.safe?'good':'warn'}">${f.kind==='open'?'Možnost uzavřít':f.kind==='near'?'Odchylka '+f.gap+' (jen kontrola)':f.kind==='merge'?'Ruční sloučení (bez automatické opravy)':f.safe?'Lze schválit':'Pouze kontrola'}</small></div>`).join('')||'<p>Žádné nálezy.</p>'}
+async function selectItem(id){selected=id;let f=data.find(x=>x.id===id);if(!f)return;full=false;$('heading').textContent=(f.kind==='dup'?'Duplicitní bod':f.kind==='open'?'Chybí uzavření':f.kind==='merge'?'Přesná návaznost':f.kind==='near'?'Blízké konce':'Bézierova smyčka')+' · '+f.type+' '+(f.line_id||'bez ID');$('detail').textContent=f.file+' · scrap '+f.scrap+' · line řádek '+f.start+' · nález řádek '+f.row+(f.first_row?' / '+f.first_row:'')+' · XY '+f.x+', '+f.y+' · -close '+f.close_setting+' · koncové body '+(f.endpoints_equal?'shodné':'rozdílné')+(f.gap!==undefined?' · odchylka '+f.gap:'');$('fix').disabled=!f.safe;$('fix').textContent=f.kind==='open'?'Schválit uzavření (-close on)':f.kind==='merge'?'Sloučit ručně v Therionu':'Schválit odstranění bodu / smyčky';$('decision').textContent='Rozhodnutí: '+(decisions[id]||'později');view=null;await draw();renderList()}
 async function draw(){let f=data.find(x=>x.id===selected);if(!f)return;shapes=await api('/api/preview',{id:f.id,scope:full?'all':$('surround').checked?'near':'line'});if(!view)resetView();renderSvg()}
 function resetView(){let f=data.find(x=>x.id===selected);if(!f)return;view={x:f.x-160,y:f.y-98,w:320,h:196};renderSvg()}
 function fullScrap(){full=true;view=null;api('/api/preview',{id:selected,scope:'all'}).then(s=>{shapes=s;let pts=s.flatMap(x=>x.segments.flatMap(z=>z.points));if(pts.length){let xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]),xmin=Math.min(...xs),xmax=Math.max(...xs),ymin=Math.min(...ys),ymax=Math.max(...ys);let w=Math.max(30,xmax-xmin),h=Math.max(20,ymax-ymin);view={x:xmin-w*.08,y:ymin-h*.08,w:w*1.16,h:h*1.16}}renderSvg()})}
@@ -203,13 +202,8 @@ def apply_fixes(ids):
     chosen=[]
     for id in set(ids):
         f=byid.get(id)
-        if f is None or not f['safe'] or f['kind'] not in ('dup','open','merge'):raise ValueError('Nález není bezpečně opravitelný: '+str(id))
+        if f is None or f['kind'] not in ('dup','open') or not f['safe']:raise ValueError('Nález není povoleno automaticky opravit (sloučení je výhradně ruční): '+str(id))
         chosen.append(f)
-    # Reject overlapping edits: a line can participate in at most one merge per batch.
-    merged_keys=[k for f in chosen if f['kind']=='merge' for k in (f['shape_key'],f['other_key'])]
-    if len(set(merged_keys))!=len(merged_keys):raise ValueError('Konfliktní sloučení: stejná čára ve více návrzích')
-    if any(f['shape_key'] in merged_keys for f in chosen if f['kind']!='merge'):
-        raise ValueError('Nejdříve proveď sloučení a pak znovu prohledej ostatní nálezy')
     grouped={}
     for f in chosen:grouped.setdefault(f['file'],[]).append(f)
     changes=[]
@@ -220,34 +214,7 @@ def apply_fixes(ids):
         original=path.read_bytes();obj=CACHE[rel]
         if hashlib.sha256(original).hexdigest()!=obj['hash']:raise ValueError('Soubor se mezitím změnil, spusť novou kontrolu: '+rel)
         lines=obj['lines'][:]
-        # Assemble edits on the original row indices. Merged definitions can be far
-        # apart, and either geometric order may come first in the file.
-        merged_occupied=set()
         for f in fs:
-            if f['kind']=='merge':
-                a=next(sh for sh in obj['shapes'] if sh['key']==f['shape_key'])
-                b=next(sh for sh in obj['shapes'] if sh['key']==f['other_key'])
-                if not (a['nodes'][-1]['p']==b['nodes'][0]['p'] and a['simple'] and b['simple']
-                        and a['scrap']==b['scrap'] and not a['id'] and not b['id']):
-                    raise ValueError('Sloučení nesplňuje bezpečnostní podmínky')
-                occupied=set(range(a['start'],a['end']+1)) | set(range(b['start'],b['end']+1))
-                if occupied & merged_occupied:raise ValueError('Překryv slučovaných bloků')
-                merged_occupied.update(occupied)
-                # The first coordinate of B is the common endpoint and must not
-                # be copied; all subsequent Bezier handles stay byte-identical.
-                first_b=b['nodes'][0]['row']
-                if first_b!=b['start']+1 or '#' in lines[first_b-1]:
-                    raise ValueError('Neočekávané direktivy před začátkem druhé čáry')
-                body_a=lines[a['start']-1:a['end']-1]
-                body_b=lines[first_b:b['end']-1]
-                newline='\r\n' if lines[a['start']-1].endswith('\r\n') else '\n'
-                combined=body_a+body_b+['endline'+newline]
-                # Keep resulting line at the position of A; delete B only.
-                lines[a['start']-1]= ''.join(combined)
-                for row in range(a['start']+1,a['end']+1):lines[row-1]=''
-                for row in range(b['start'],b['end']+1):lines[row-1]=''
-        for f in fs:
-            if f['kind']=='merge':continue
             if f['kind']=='open':
                 row=f['start']
                 # Existing -close option can appear on a separate line inside the line block.
@@ -272,7 +239,7 @@ def apply_fixes(ids):
     folder.mkdir(parents=True,exist_ok=False)
     for path,rel,original,new,fs in changes:
         dest=folder/rel;dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(original)
-    log={'created':datetime.now().isoformat(),'root':str(ROOT),'changes':[{'file':rel,'rows_removed':[f['row'] for f in fs if f['kind']=='dup'],'lines_closed':[f['start'] for f in fs if f['kind']=='open'],'merged_lines':[[f['start'],f['row']] for f in fs if f['kind']=='merge']} for _,rel,_,_,fs in changes]}
+    log={'created':datetime.now().isoformat(),'root':str(ROOT),'changes':[{'file':rel,'rows_removed':[f['row'] for f in fs if f['kind']=='dup'],'lines_closed':[f['start'] for f in fs if f['kind']=='open'],'merged_lines':[]} for _,rel,_,_,fs in changes]}
     (folder/'protokol.json').write_text(json.dumps(log,ensure_ascii=False,indent=2),encoding='utf-8')
     written=[]
     try:
@@ -281,7 +248,7 @@ def apply_fixes(ids):
     except Exception:
         for path,original in written:path.write_bytes(original)
         raise
-    return {'upraveno_souboru':len(changes),'odstraneno_bodu_a_smycek':sum(f['kind']=='dup' for f in chosen),'uzavreno_car':sum(f['kind']=='open' for f in chosen),'slouceno_dvojic':sum(f['kind']=='merge' for f in chosen),'zaloha':str(folder),'protokol':str(folder/'protokol.json')}
+    return {'upraveno_souboru':len(changes),'odstraneno_bodu_a_smycek':sum(f['kind']=='dup' for f in chosen),'uzavreno_car':sum(f['kind']=='open' for f in chosen),'slouceno_dvojic':0,'zaloha':str(folder),'protokol':str(folder/'protokol.json')}
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('folder',nargs='?',default='.');p.add_argument('--port',type=int,default=0);p.add_argument('--tolerance',type=float,default=.15);p.add_argument('--near',type=float,default=1.0);args=p.parse_args()
