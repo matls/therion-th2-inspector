@@ -28,15 +28,12 @@ endline
 endscrap
 '''
             p=app.ROOT/'drawing.th2';p.write_text(source)
-            fs=app.scan()['findings'];joins=[f for f in fs if f['kind']=='merge' and f['safe']]
+            fs=app.scan()['findings'];joins=[f for f in fs if f['kind']=='merge']
             self.assertEqual(len(joins),1)
-            app.apply_fixes([joins[0]['id']]);result=p.read_text()
-            self.assertEqual(result.count('line floor-step'),1)
-            self.assertIn(' 12 0 13 0 15 0',result)
-            self.assertIn('line wall',result)
-            self.assertEqual(result.count('endline'),2)
-            self.assertEqual(result.count(' 10 0\n'),1)
-            self.assertTrue(list((app.ROOT/'_Therion_zalohy').rglob('drawing.th2')))
+            self.assertFalse(joins[0]['safe'])
+            with self.assertRaises(ValueError):
+                app.apply_fixes([joins[0]['id']])
+            self.assertEqual(p.read_text(),source)
     def test_small_bezier_loop_can_be_removed(self):
         with tempfile.TemporaryDirectory() as td:
             app.ROOT=Path(td)
