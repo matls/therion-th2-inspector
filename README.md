@@ -1,4 +1,4 @@
-# Therion TH2 Inspector (vývojová verze 3)
+# Therion TH2 Inspector (vývojová verze 4)
 
 Lokální nástroj pro kontrolu `.th2` kresby v prohlížeči. Vyžaduje Python 3.9+; nepoužívá externí balíčky. Není oficiálním projektem Therionu.
 
@@ -37,3 +37,10 @@ Jde o vývojovou verzi: první dávku oprav ověř na kopii projektu a porovnej 
 ## Další vývoj
 
 Doporučené úkoly: slučování vzdálených definic, obrácená orientace čar, detekce referencí na ID a rychlejší prostorový index pro rozsáhlé scrappy.
+
+## Verze 4
+
+- Přesně navazující čáry se stejnou hlavičkou lze schválit ke sloučení i tehdy, pokud jsou v souboru vzdálené nebo zapsané v opačném pořadí než geometrická návaznost. Podporovány jsou interní direktivy `smooth on/off`; `-id` a ostatní interní direktivy stále blokují automatické sloučení.
+- Po sobě jdoucí stejný koncový bod lze odstranit i jako celý Bézierův segment se šesti souřadnicemi, pokud řídicí body leží nejvýše 30 jednotek od společného bodu. **Tím se úmyslně odstraní nakreslená smyčka.** Větší smyčky zůstávají jen ke kontrole.
+- Opravy se provádějí až po schválení a zálohování měněných originálů. Před použitím na hlavním projektu zkontroluj výsledek v Therionu.
+- Testy: `python -m unittest discover -s tests -v`.
