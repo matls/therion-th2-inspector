@@ -4,7 +4,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import therion_kontrola as app
 
 class VersionFiveTests(unittest.TestCase):
-    def test_merge_is_advisory_and_api_rejects_it(self):
+    def test_merge_v6_allows_safe_direct_connection(self):
         with tempfile.TemporaryDirectory() as tmp:
             app.ROOT=Path(tmp)
             p=app.ROOT/'example.th2'
@@ -23,11 +23,10 @@ endscrap
             findings=app.scan()['findings']
             merges=[f for f in findings if f['kind']=='merge']
             self.assertEqual(len(merges),1)
-            self.assertFalse(merges[0]['safe'])
-            with self.assertRaisesRegex(ValueError,'ruční'):
-                app.apply_fixes([merges[0]['id']])
-            self.assertEqual(p.read_text(),original)
-            self.assertFalse((app.ROOT/'_Therion_zalohy').exists())
+            self.assertTrue(merges[0]['safe'])
+            app.apply_fixes([merges[0]['id']])
+            self.assertEqual(p.read_text().count('line floor-step'),1)
+            self.assertTrue((app.ROOT/'_Therion_zalohy').exists())
     def test_regular_edits_remain_enabled(self):
         with tempfile.TemporaryDirectory() as tmp:
             app.ROOT=Path(tmp)
