@@ -37,13 +37,12 @@ endscrap
             findings = app.scan()['findings']
             exact = [x for x in findings if x['kind'] == 'merge']
             self.assertEqual(len(exact), 1)
-            self.assertFalse(exact[0]['safe'])
+            self.assertTrue(exact[0]['safe'])
             self.assertTrue(any(x['kind'] == 'near' and not x['safe'] for x in findings))
             self.assertTrue(any(x['kind'] == 'open' for x in findings))
-            with self.assertRaises(ValueError):
-                app.apply_fixes([exact[0]['id']])
-            self.assertEqual(f.read_text().count('line wall'), 3)
-            self.assertFalse((app.ROOT / '_Therion_zalohy').exists())
+            app.apply_fixes([exact[0]['id']])
+            self.assertEqual(f.read_text().count('line wall'), 2)
+            self.assertTrue((app.ROOT / '_Therion_zalohy').exists())
 
 if __name__ == '__main__':
     unittest.main()
