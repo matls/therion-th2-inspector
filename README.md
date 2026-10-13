@@ -1,4 +1,4 @@
-# Therion TH2 Inspector – verze 8 (experimentální)
+# Therion TH2 Inspector – verze 9 (experimentální)
 
 Lokální Python/HTML nástroj pro hledání a schvalování oprav souborů `.th2`. Nejde o oficiální součást Therionu.
 
@@ -10,7 +10,7 @@ Lokální Python/HTML nástroj pro hledání a schvalování oprav souborů `.th
 
 Ruční spuštění: `py therion_kontrola.py "C:\mapy\jeskyne" --near 1.0`. Přepínač `--near` určuje maximální vzdálenost navazujících konců v souřadnicových jednotkách TH2; pro vyšší bezpečnost používej nízkou toleranci.
 
-## Novinky verze 8
+## Novinky verze 9
 
 - **Přesné návaznosti i blízké konce:** schválení spojení dvou čar a celých řetězců. Při blízkých koncích vznikne společný bod v souřadnicích **konce předchozí čáry**; počáteční bod navazující čáry se přizpůsobí. Ostatní souřadnice a Bézierovy řídicí body se nepřepočítávají. Zelený přerušovaný náhled ukazuje změnu prvního úseku připojované čáry.
 - **Shodné parametry:** podporujeme i identické `-reverse on/off`, `-subtype` a další parametry hlavičky; pořadí parametrů v hlavičce se může lišit. Parametry musí být shodné u všech členů řetězce. Nejednoznačné nebo opakované parametry jsou pouze ke kontrole.
@@ -33,3 +33,10 @@ Před úpravou se do `_Therion_zalohy/<čas>/` uloží kopie **pouze souborů, k
 21 automatických testů pokrývá mimo jiné totožné i různě seřazené `-reverse`/`-subtype`, přesnou a blízkou návaznost včetně Bézierovy křivky, smíšené řetězce, konflikty, blokované vnitřní direktivy, uzavření `wall`, zálohy a vyloučené složky. JavaScript byl zkontrolován pomocí `node --check`.
 
 Zdrojový kód: https://github.com/matls/therion-th2-inspector
+
+## Úprava rozhraní (13. 10. 2026)
+Záhlaví je kompaktní, informace o projektu a vynechaných složkách jsou vedle názvu. Výška seznamu a náhledu se přizpůsobuje prostoru.
+
+## Verze 9: proč sloučení nejde
+
+Nálezy přesné i blízké návaznosti zobrazují **v horní části detailu všechny konkrétní překážky**: rozdílné hodnoty pojmenovaných atributů (včetně `-reverse` a `-subtype`), existující `-id`, direktivy nebo komentáře uvnitř čáry s čísly řádků, rozvětvení a konfliktní návrhy. Bezpečnostní podmínky pro automatické provádění oprav zůstaly stejné jako ve verzi 8. Jednořádkové záhlaví zůstává zachované.
