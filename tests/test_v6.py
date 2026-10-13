@@ -35,10 +35,10 @@ endscrap
             self.assertIn(' 0 0\n 10 0\n 20 0\n',result)
             self.assertEqual(result.count('endline'),2)
     def test_reverse_and_inside_directives_not_auto_mergable(self):
-        for mid in ('smooth off',''):
-            with self.subTest(mid=mid),tempfile.TemporaryDirectory() as tmp:
-                app.ROOT=Path(tmp);p=app.ROOT/'a.th2'
-                p.write_text('''scrap A
+        # Identical -reverse is now supported; internal directives remain blocked.
+        with tempfile.TemporaryDirectory() as tmp:
+            app.ROOT=Path(tmp);p=app.ROOT/'a.th2'
+            p.write_text("""scrap A
 line wall -reverse on
  0 0
  10 0
@@ -48,11 +48,12 @@ line wall -reverse on
  20 0
 endline
 endscrap
-''')
-                f=[x for x in app.scan()['findings'] if x['kind']=='merge']
-                self.assertEqual(len(f),1)
-                self.assertFalse(f[0]['safe'])
-                with self.assertRaises(ValueError):app.apply_fixes([f[0]['id']])
+""")
+            f=[x for x in app.scan()['findings'] if x['kind']=='merge']
+            self.assertEqual(len(f),1)
+            self.assertTrue(f[0]['safe'])
+            app.apply_fixes([f[0]['id']])
+            self.assertEqual(p.read_text().count('line wall -reverse on'),1)
         with tempfile.TemporaryDirectory() as tmp:
             app.ROOT=Path(tmp);p=app.ROOT/'a.th2'
             p.write_text('''scrap A
