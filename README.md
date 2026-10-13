@@ -1,4 +1,4 @@
-# Therion TH2 Inspector – verze 11 (experimentální)
+# Therion TH2 Inspector – verze 12 (experimentální)
 
 Lokální Python/HTML nástroj pro hledání a schvalování oprav souborů `.th2`. Nejde o oficiální součást Therionu.
 
@@ -14,7 +14,7 @@ Ruční spuštění: `py therion_kontrola.py "C:\mapy\jeskyne" --near 1.0`. Pře
 
 - **Přesné návaznosti i blízké konce:** schválení spojení dvou čar a celých řetězců. Při blízkých koncích vznikne společný bod v souřadnicích **konce předchozí čáry**; počáteční bod navazující čáry se přizpůsobí. Ostatní souřadnice a Bézierovy řídicí body se nepřepočítávají. Zelený přerušovaný náhled ukazuje změnu prvního úseku připojované čáry.
 - **Shodné parametry:** podporujeme i identické `-reverse on/off`, `-subtype` a další parametry hlavičky; pořadí parametrů v hlavičce se může lišit. Parametry musí být shodné u všech členů řetězce. Nejednoznačné nebo opakované parametry jsou pouze ke kontrole.
-- **Směr spojení:** přímé sloučení vyžaduje návaznost konec A → začátek B. Pro vybrané čáry s `-reverse on` je dostupné samostatně schvalované obrácení geometrie; následně znovu prohledej projekt a spoj čáry. Čáry bez explicitního `-reverse on` se neobracejí. Čáry s `-id`, komentáři uvnitř těla, uzavřené čáry, rozvětvení a nejednoznačné kombinace se automaticky neslučují. Vnitřní `smooth on` a `smooth off` jsou nově podporovány a zachovávají se na původním místě. `smooth` navázané na počáteční bod připojované čáry zůstává jen ke kontrole; jiné vnitřní direktivy rovněž.
+- **Směr spojení:** přímé sloučení vyžaduje návaznost konec A → začátek B. Pro vybrané čáry s `-reverse on` je dostupné samostatně schvalované obrácení geometrie; následně znovu prohledej projekt a spoj čáry. Čáry bez explicitního `-reverse on` se neobracejí. Čáry s `-id`, komentáři uvnitř těla, uzavřené čáry, rozvětvení a nejednoznačné kombinace se automaticky neslučují. Vnitřní `smooth on/off` a bodový atribut `altitude` jsou podporovány a zachovávají se na původním místě. `smooth` navázané na počáteční bod připojované čáry zůstává jen ke kontrole; jiné vnitřní direktivy rovněž.
 - **Uzavření:** je-li první a poslední bod jedné `line` přesně stejný a chybí `-close on`, nabídne se změna na `-close on` i pro `wall`; totožnost prvního a posledního bodu se nezobrazuje jako smazatelná duplicita. Jinak zůstávají opravy duplicitních přímých bodů a drobných Bézierových smyček.
 - **Vyloučené složky:** `data`, `záloha`, `zaloha` a `_Therion_zalohy` v jakékoli úrovni, bez ohledu na velikost písmen. Seznam je viditelný v záhlaví stránky.
 
@@ -30,7 +30,7 @@ Před úpravou se do `_Therion_zalohy/<čas>/` uloží kopie **pouze souborů, k
 
 `py -m unittest discover -s tests -v`
 
-34 automatických testů pokrývá mimo jiné totožné i různě seřazené `-reverse`/`-subtype`, přesnou a blízkou návaznost včetně Bézierovy křivky, smíšené řetězce, konflikty, zachované `smooth on/off` i blokované rizikové vnitřní direktivy, uzavření `wall`, zálohy a vyloučené složky. JavaScript byl zkontrolován pomocí `node --check`.
+41 automatických testů pokrývá mimo jiné totožné i různě seřazené `-reverse`/`-subtype`, přesnou a blízkou návaznost včetně Bézierovy křivky, smíšené řetězce, konflikty, zachované `smooth on/off` i blokované rizikové vnitřní direktivy, uzavření `wall`, zálohy a vyloučené složky. JavaScript byl zkontrolován pomocí `node --check`.
 
 Zdrojový kód: https://github.com/matls/therion-th2-inspector
 
@@ -56,3 +56,11 @@ Nálezy přesné i blízké návaznosti zobrazují **v horní části detailu v�
 - Čáry s ID, uzavřené čáry, neznámé direktivy a `smooth` na krajním bodu se **automaticky neobracejí**. `smooth` na krajním bodu má při obrácení nejednoznačný význam.
 - Po schválení obrácení spusť nové prohledání: následně se mohou zobrazit další návrhy sloučení. Obrácení a slučování se provádí **ve dvou samostatných dávkách**; stejné čáry nelze ve stejné dávce obracet a upravovat jinak.
 - Pro některé směrové atributy může být výsledek významově citlivý; ověř zobrazení a výsledek kompilace v Therionu na kopii projektu.
+
+## Verze 12: bodový atribut `altitude`
+
+- `altitude` u bodů `line` se zachová spolu s příslušným bodem při obrácení čáry s `-reverse on` (i u krajních bodů). Zachová se původní text hodnoty, včetně hodnot v hranatých závorkách.
+- Při sloučení se zachovají atributy `altitude` u všech bodů. `altitude` z odstraněného prvního bodu navazující čáry se přenese na společný bod. Při dvou shodných hodnotách se zachová jen jeden výskyt.
+- Rozdílné hodnoty `altitude` ve společném bodu se automaticky neslučují. Pokud má počáteční bod navazující čáry `altitude` a konce jsou jen blízko (nikoli identické), sloučení se zablokuje. `smooth` na začátku připojované čáry zůstává pouze ke kontrole.
+- Jiné neznámé vnitřní direktivy stále blokují automatický zásah. Obracení čar s ID a typu `border` zůstává zakázané.
+- Přibylo sedm regresních testů pro atributy na krajních i vnitřních bodech, kombinaci se `smooth`, slučování a konflikt výšek.
