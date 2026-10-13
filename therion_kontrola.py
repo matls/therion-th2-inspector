@@ -62,32 +62,61 @@ def options_signature(shape):
         result[key]=val
     return (shape['type'], tuple(sorted(result.items())))
 
-def merge_body_info(shape, source_lines):
-    """Validate body, preserving interior smooth directives verbatim.
+def point_groups(shape, source_lines):
+    """Read geometry and supported point attributes without losing their owner.
 
-    Smooth attached to the first node of a *later* line is not safe to
-    discard without modelling Therion smoothing semantics; reject that case.
+    altitude and smooth directives following an anchor belong to that anchor.
+    Preserve original spelling, indentation and line endings on merge.
     """
     if shape['end'] is None or shape['id'] or '#' in source_lines[shape['start']-1]:
         return None, 'ID nebo komentář v hlavičce'
-    body=source_lines[shape['start']:shape['end']-1]
-    coords=0
-    first_anchor_smooth=False
-    for i,line in enumerate(body):
-        if '#' in line or not line.strip():return None,f'ř. {shape["start"]+1+i}: komentář nebo prázdný řádek'
-        parts=line.split()
-        if len(parts)==2 and parts[0]=='smooth' and parts[1] in ('on','off'):
-            if not coords:return None,f'ř. {shape["start"]+1+i}: smooth před prvním bodem'
-            if coords==1:first_anchor_smooth=True
+    groups=[]
+    for row,line in enumerate(source_lines[shape['start']:shape['end']-1],shape['start']+1):
+        tokens=line.strip().split()
+        if '#' in line or not tokens:
+            return None,f'ř. {row}: komentář nebo prázdný řádek'
+        if tokens[0] in ('smooth','altitude'):
+            if not groups:return None,f'ř. {row}: atribut před prvním bodem'
+            if tokens[0]=='smooth' and tokens[1:] not in (['on'],['off']):
+                return None,f'ř. {row}: nepodporovaný smooth'
+            if tokens[0]=='altitude' and len(tokens)<2:
+                return None,f'ř. {row}: altitude bez hodnoty'
+            if any(t[0]==tokens[0] for t in groups[-1]['attrs']):
+                return None,f'ř. {row}: opakovaný atribut {tokens[0]}'
+            groups[-1]['attrs'].append((tokens[0],line,tuple(tokens[1:])))
             continue
-        if len(parts) not in (2,6) or (coords==0 and len(parts)!=2):
-            return None,f'ř. {shape["start"]+1+i}: nepodporovaná direktiva'
-        try: [float(t) for t in parts]
-        except ValueError:return None,f'ř. {shape["start"]+1+i}: neplatné souřadnice'
-        coords+=1
-    if coords!=len(shape['nodes']) or coords<2:
+        if len(tokens) not in (2,6) or (not groups and len(tokens)!=2):
+            return None,f'ř. {row}: nepodporovaná direktiva'
+        try:[float(x) for x in tokens]
+        except ValueError:return None,f'ř. {row}: neplatné souřadnice'
+        groups.append({'coord':line,'tokens':tokens,'attrs':[]})
+    if len(groups)!=len(shape['nodes']) or len(groups)<2:
         return None,'neúplná geometrie'
-    return {'body':body,'first_anchor_smooth':first_anchor_smooth},None
+    return groups,None
+
+def merge_body_info(shape, source_lines):
+    groups,error=point_groups(shape,source_lines)
+    if groups is None:return None,error
+    return {'groups':groups,'body':[line for g in groups for line in [g['coord'],*(a[1] for a in g['attrs'])]],
+            'first_anchor_smooth':any(a[0]=='smooth' for a in groups[0]['attrs'])},None
+
+def joining_attributes(a,b,source_lines):
+    """Return join-anchor attributes retained exactly once, or unsafe reason."""
+    ga,ea=point_groups(a,source_lines);gb,eb=point_groups(b,source_lines)
+    if ga is None or gb is None:return None,ea or eb
+    left={k:(raw,val) for k,raw,val in ga[-1]['attrs']}
+    right={k:(raw,val) for k,raw,val in gb[0]['attrs']}
+    if 'smooth' in right:
+        return None,'smooth na prvním bodu druhé čáry vyžaduje ruční kontrolu'
+    # Altitude belongs to the same exact node after the join. Do not discard it.
+    if 'altitude' in right and a['nodes'][-1]['p']!=b['nodes'][0]['p']:
+        return None,'altitude na počátku druhé čáry: blízké body nemají shodné souřadnice'
+    if 'altitude' in left and 'altitude' in right and left['altitude'][1]!=right['altitude'][1]:
+        return None,'rozdílné altitude na společném bodu: '+str(left['altitude'][1])+' / '+str(right['altitude'][1])
+    extra=[]
+    if 'altitude' in right and 'altitude' not in left:
+        extra.append(right['altitude'][0])
+    return extra,None
 
 def clean_merge_body(shape,source_lines):
     return merge_body_info(shape,source_lines)[0] is not None
@@ -139,6 +168,8 @@ def merge_blockers(a, b, items, source_lines, near):
             info,error=merge_body_info(sh,source_lines)
             if not extra:extra=[error or 'neplatná nebo neúplná geometrie']
             add(f"{label} čára (ř. {sh['start']}): nepodporovaný obsah uvnitř line – "+'; '.join(extra[:3]))
+    added_attrs,join_error=joining_attributes(a,b,source_lines)
+    if join_error:add(f"Napojovací bod: {join_error}")
     next_body,error=merge_body_info(b,source_lines)
     if next_body and next_body['first_anchor_smooth']:
         add(f"Druhá čára (ř. {b['start']}): smooth u prvního bodu by při sloučení změnil význam napojení")
@@ -171,25 +202,10 @@ def reverse_body(shape, source_lines):
         raise ValueError('Nepodporované parametry hlavičky')
     if len(shape['nodes'])<2 or shape['nodes'][0]['p']==shape['nodes'][-1]['p']:
         raise ValueError('Uzavřená nebo příliš krátká čára')
-    body=source_lines[shape['start']:shape['end']-1]
-    anchors=[]
-    for row in body:
-        stripped=row.strip()
-        tokens=stripped.split()
-        if '#' in row or not tokens:
-            raise ValueError('Komentář nebo prázdný řádek uvnitř line')
-        if tokens[:1]==['smooth'] and tokens[1:] in (['on'],['off']):
-            if not anchors or anchors[-1]['smooth'] is not None:
-                raise ValueError('Nejednoznačné smooth')
-            anchors[-1]['smooth']=tokens[1]
-            continue
-        if len(tokens) not in (2,6) or (not anchors and len(tokens)!=2):
-            raise ValueError('Nepodporovaná direktiva nebo geometrie')
-        try: [float(x) for x in tokens]
-        except ValueError: raise ValueError('Neplatná souřadnice')
-        anchors.append({'tokens':tokens, 'smooth':None})
-    if len(anchors)!=len(shape['nodes']):
-        raise ValueError('Nesoulad souřadnic a parseru')
+    groups,error=point_groups(shape,source_lines)
+    if groups is None:raise ValueError(error)
+    anchors=[{'tokens':g['tokens'], 'attrs':g['attrs'],
+              'smooth':next((val[0] for key,raw,val in g['attrs'] if key=='smooth'),None)} for g in groups]
     # Interpreting smooth is ambiguous at the new initial/final anchor.
     # Internal smooth can be moved with its anchor, preserving its value.
     if anchors[0]['smooth'] or anchors[-1]['smooth']:
@@ -197,6 +213,7 @@ def reverse_body(shape, source_lines):
     indent='  '
     newline='\r\n' if source_lines[shape['start']-1].endswith('\r\n') else '\n'
     lines=[indent+' '.join(anchors[-1]['tokens'][-2:])+newline]
+    lines.extend(raw for key,raw,val in anchors[-1]['attrs'])
     for i in range(len(anchors)-2,-1,-1):
         old=anchors[i+1]['tokens']
         if len(old)==6:
@@ -204,8 +221,7 @@ def reverse_body(shape, source_lines):
         else:
             toks=anchors[i]['tokens'][-2:]
         lines.append(indent+' '.join(toks)+newline)
-        if anchors[i]['smooth'] is not None:
-            lines.append(indent+'smooth '+anchors[i]['smooth']+newline)
+        lines.extend(raw for key,raw,val in anchors[i]['attrs'])
     # Ensure reversibility of all geometric segments with no tolerance loss.
     old_segments=shape['segments']
     expected=[]
@@ -215,7 +231,7 @@ def reverse_body(shape, source_lines):
     parsed=[]
     for line in lines[1:]:
         toks=line.split()
-        if toks[:1]==['smooth']:continue
+        if toks[:1] in (['smooth'],['altitude']):continue
         pts=[cursor,toks[-2:]] if len(toks)==2 else [cursor,toks[:2],toks[2:4],toks[-2:]]
         parsed.append(pts);cursor=toks[-2:]
     if len(parsed)!=len(expected) or any(
@@ -360,7 +376,7 @@ def find_joins(path,shapes,source_lines):
                 unique=starts_with_unique_endpoint(a,b,items,NEAR)
                 next_body,_=merge_body_info(b,source_lines)
                 safe=(attributes_match and clean_merge_body(a,source_lines)
-                      and clean_merge_body(b,source_lines) and not next_body['first_anchor_smooth'] and unique
+                      and clean_merge_body(b,source_lines) and joining_attributes(a,b,source_lines)[1] is None and unique
                       and (not exact or degree.get(tuple(end),0)==2))
                 blockers=merge_blockers(a,b,items,source_lines,NEAR)
                 if exact and degree.get(tuple(end),0)!=2:
@@ -633,20 +649,21 @@ def apply_fixes(ids):
                     raise ValueError('Čáry z různých scrapů')
                 if i and dist(members[i-1]['nodes'][-1]['p'],sh['nodes'][0]['p'])>NEAR:
                     raise ValueError('Návaznost už není platná')
-            def body_coords(sh, first=False):
+            def body_coords(sh):
                 info,error=merge_body_info(sh,obj['lines'])
                 if info is None:raise ValueError('Nekompatibilní obsah line: '+str(error))
-                if not first and info['first_anchor_smooth']:
-                    raise ValueError('smooth u začátku další čáry vyžaduje ruční kontrolu')
                 return info['body']
-            joined=[obj['lines'][reference['start']-1]]+body_coords(reference,first=True)
+            joined=[obj['lines'][reference['start']-1]]+body_coords(reference)
             for prev,sh in zip(members,members[1:]):
-                # Reuse the previous endpoint. Only the old start coordinate of
-                # the next line is discarded; its Bezier handles stay unchanged.
-                # If the gap is nonzero, this is an explicit geometry correction.
                 if dist(prev['nodes'][-1]['p'],sh['nodes'][0]['p'])>NEAR:
                     raise ValueError('Koncové body jsou mimo toleranci')
-                joined+=body_coords(sh)[1:]
+                extra,error=joining_attributes(prev,sh,obj['lines'])
+                if error:raise ValueError('Nepřenositelné atributy napojovacího bodu: '+error)
+                # Add altitude from discarded first anchor, preserving its exact value.
+                joined+=extra
+                groups,error=point_groups(sh,obj['lines'])
+                if groups is None:raise ValueError(str(error))
+                joined += [line for g in groups[1:] for line in [g['coord'],*(x[1] for x in g['attrs'])]]
             newline='\r\n' if obj['lines'][reference['start']-1].endswith('\r\n') else '\n'
             joined+=['endline'+newline]
             lines[reference['start']-1]=''.join(joined)
