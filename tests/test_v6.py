@@ -69,7 +69,9 @@ endline
 endscrap
 ''')
             f=[x for x in app.scan()['findings'] if x['kind']=='merge']
-            self.assertEqual(len(f),1);self.assertFalse(f[0]['safe'])
+            self.assertEqual(len(f),1);self.assertTrue(f[0]['safe'])
+            app.apply_fixes([f[0]['id']])
+            self.assertIn('smooth off',p.read_text())
     def test_straight_duplicate_after_bezier(self):
         with tempfile.TemporaryDirectory() as tmp:
             app.ROOT=Path(tmp);p=app.ROOT/'a.th2'
