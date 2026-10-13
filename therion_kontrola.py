@@ -62,17 +62,35 @@ def options_signature(shape):
         result[key]=val
     return (shape['type'], tuple(sorted(result.items())))
 
-def clean_merge_body(shape,source_lines):
-    """Only coordinate-only line bodies; rejects comments and stateful directives."""
-    if not shape['simple'] or shape['end'] is None or shape['id'] or '#' in source_lines[shape['start']-1]:
-        return False
+def merge_body_info(shape, source_lines):
+    """Validate body, preserving interior smooth directives verbatim.
+
+    Smooth attached to the first node of a *later* line is not safe to
+    discard without modelling Therion smoothing semantics; reject that case.
+    """
+    if shape['end'] is None or shape['id'] or '#' in source_lines[shape['start']-1]:
+        return None, 'ID nebo komentář v hlavičce'
     body=source_lines[shape['start']:shape['end']-1]
-    if len(body)!=len(shape['nodes']) or len(body)<2 or len(body[0].split())!=2: return False
-    for line in body:
-        if '#' in line or len(line.split()) not in (2,6): return False
-        try: [float(t) for t in line.split()]
-        except ValueError: return False
-    return True
+    coords=0
+    first_anchor_smooth=False
+    for i,line in enumerate(body):
+        if '#' in line or not line.strip():return None,f'ř. {shape["start"]+1+i}: komentář nebo prázdný řádek'
+        parts=line.split()
+        if len(parts)==2 and parts[0]=='smooth' and parts[1] in ('on','off'):
+            if not coords:return None,f'ř. {shape["start"]+1+i}: smooth před prvním bodem'
+            if coords==1:first_anchor_smooth=True
+            continue
+        if len(parts) not in (2,6) or (coords==0 and len(parts)!=2):
+            return None,f'ř. {shape["start"]+1+i}: nepodporovaná direktiva'
+        try: [float(t) for t in parts]
+        except ValueError:return None,f'ř. {shape["start"]+1+i}: neplatné souřadnice'
+        coords+=1
+    if coords!=len(shape['nodes']) or coords<2:
+        return None,'neúplná geometrie'
+    return {'body':body,'first_anchor_smooth':first_anchor_smooth},None
+
+def clean_merge_body(shape,source_lines):
+    return merge_body_info(shape,source_lines)[0] is not None
 
 def starts_with_unique_endpoint(a,b,items,near):
     """Reject touching any third endpoint; near joins must be uniquely closest."""
@@ -118,8 +136,12 @@ def merge_blockers(a, b, items, source_lines, near):
                 valid=len(tokens) in (2,6) and all(re.fullmatch(r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][+-]?\d+)?',t) for t in tokens)
                 if not valid or '#' in line: extra.append(f"ř. {offset}: {raw[:60]}")
             if '#' in source_lines[sh['start']-1]:extra.insert(0,'komentář v hlavičce')
-            if not extra:extra=['neplatná nebo neúplná geometrie']
+            info,error=merge_body_info(sh,source_lines)
+            if not extra:extra=[error or 'neplatná nebo neúplná geometrie']
             add(f"{label} čára (ř. {sh['start']}): nepodporovaný obsah uvnitř line – "+'; '.join(extra[:3]))
+    next_body,error=merge_body_info(b,source_lines)
+    if next_body and next_body['first_anchor_smooth']:
+        add(f"Druhá čára (ř. {b['start']}): smooth u prvního bodu by při sloučení změnil význam napojení")
     if not starts_with_unique_endpoint(a,b,items,near):
         end=a['nodes'][-1]['p']; start=b['nodes'][0]['p']
         colliders=[]
@@ -192,6 +214,8 @@ def parse_file(path):
             if cmd=='-close' and len(parts)>1:current['close']=parts[1]=='on';current['close_setting']=parts[1];continue
             if cmd=='-id' and len(parts)>1:current['id']=parts[1];continue
             if len(parts) not in (2,6):
+                if parts[:1]==['smooth'] and parts[1:] in (['on'],['off']):
+                    continue
                 current['simple']=False
                 continue
             try: nums=[float(n) for n in parts]
@@ -233,8 +257,9 @@ def find_joins(path,shapes,source_lines):
                 # Exact joins have degree two; near joins must not intersect other
                 # endpoints within the tolerance and each must have one candidate.
                 unique=starts_with_unique_endpoint(a,b,items,NEAR)
+                next_body,_=merge_body_info(b,source_lines)
                 safe=(attributes_match and clean_merge_body(a,source_lines)
-                      and clean_merge_body(b,source_lines) and unique
+                      and clean_merge_body(b,source_lines) and not next_body['first_anchor_smooth'] and unique
                       and (not exact or degree.get(tuple(end),0)==2))
                 blockers=merge_blockers(a,b,items,source_lines,NEAR)
                 if exact and degree.get(tuple(end),0)!=2:
@@ -249,7 +274,8 @@ def find_joins(path,shapes,source_lines):
                     'type':a['type'],'line_id':a['id'] or b['id'],'start':a['start'],
                     'row':b['start'],'first_row':a['start'],'kind':'merge' if exact else 'near',
                     'x':round((end[0]+start[0])/2,4),'y':round((end[1]+start[1])/2,4),
-                    'gap':round(gap,6),'safe':safe,'reason':reason,'blockers':blockers,'shape_key':a['key'],'other_key':b['key'],
+                    'gap':round(gap,6),'safe':safe,'reason':reason,'blockers':blockers,
+                    'ids':list(dict.fromkeys(z for z in (a['id'],b['id']) if z)),'shape_key':a['key'],'other_key':b['key'],
                     'close_setting':a['close_setting'],'endpoints_equal':exact,
                     'first_point':end,'last_point':start})
         # A near gap is allowed only when no second directed candidate competes
@@ -299,6 +325,75 @@ def find_chains(path, findings, shapes):
             'last_point':members[-1]['nodes'][0]['p']})
     return result
 
+def find_id_references(root, identifier):
+    """Best-effort occurrences in .th/.th2 under root, excluding backup dirs.
+
+    Does not resolve Therion scope, imports outside root, or preprocessor
+    expansions. Never authorizes an ID-bearing line for automatic edits.
+    """
+    occurrences=[]
+    for base,dirs,names in os.walk(root):
+        dirs[:]=[d for d in dirs if d.casefold() not in SKIP]
+        for filename in names:
+            if Path(filename).suffix.lower() not in ('.th','.th2'):continue
+            path=Path(base)/filename
+            try:
+                raw=path.read_bytes()
+                try: content=raw.decode('utf-8-sig')
+                except UnicodeDecodeError:content=raw.decode('cp1250')
+            except (OSError,UnicodeError):continue
+            for number,line in enumerate(content.splitlines(),1):
+                code=line.split('#',1)[0].strip()
+                if not code:continue
+                tokens=code.split()
+                if identifier not in tokens:continue
+                if tokens[0]=='line' and '-id' in tokens and tokens.index('-id')+1<len(tokens) and tokens[tokens.index('-id')+1]==identifier:
+                    continue
+                if tokens[0]=='-id' and len(tokens)>1 and tokens[1]==identifier:continue
+                occurrences.append({'file':str(path.relative_to(root)),'row':number,'context':code[:160],
+                                    'command':tokens[0]})
+    return occurrences
+
+
+def annotate_id_references(found):
+    """Index IDs in one filesystem traversal; no authority to modify any ID."""
+    ids=set(f['line_id'] for f in found if f.get('line_id') and f['kind'] in ('merge','near'))
+    refs={identifier:[] for identifier in ids}
+    if not ids:return
+    for base,dirs,names in os.walk(ROOT):
+        dirs[:]=[d for d in dirs if d.casefold() not in SKIP]
+        for filename in names:
+            if Path(filename).suffix.lower() not in ('.th','.th2'):continue
+            p=Path(base)/filename
+            try:
+                raw=p.read_bytes()
+                try: content=raw.decode('utf-8-sig')
+                except UnicodeDecodeError:content=raw.decode('cp1250')
+            except (OSError,UnicodeError):continue
+            for number,line in enumerate(content.splitlines(),1):
+                code=line.split('#',1)[0].strip()
+                if not code:continue
+                tokens=code.split()
+                found_ids=ids.intersection(tokens)
+                if not found_ids:continue
+                for identifier in found_ids:
+                    if tokens[0]=='line' and '-id' in tokens and tokens.index('-id')+1<len(tokens) and tokens[tokens.index('-id')+1]==identifier:continue
+                    if tokens[0]=='-id' and len(tokens)>1 and tokens[1]==identifier:continue
+                    refs[identifier].append({'file':str(p.relative_to(ROOT)),'row':number,'context':code[:160],'command':tokens[0]})
+    for f in found:
+        if f['kind'] not in ('merge','near') or not f.get('ids'):continue
+        details=[]
+        for identifier in f['ids']:
+            hits=refs.get(identifier,[])
+            if hits:
+                details.append('ID '+identifier+': '+str(len(hits))+' výskytů mimo deklaraci – '+
+                               '; '.join(h['file']+':'+str(h['row'])+' ('+h['command']+')' for h in hits[:6]))
+            else:
+                details.append('ID '+identifier+': v prohledané složce nenalezen odkaz (neprokazuje nepoužití)')
+        f.setdefault('blockers',[]).extend(details)
+        f['reason']='Automatické sloučení blokováno: '+' | '.join(f['blockers'])
+
+
 def scan():
     CACHE.clear();found=[];errors=[];files=0
     for base,dirs,names in os.walk(ROOT):
@@ -309,6 +404,7 @@ def scan():
             try:
                 obj=parse_file(p);CACHE[str(p.relative_to(ROOT))]=obj;found+=obj['findings']
             except Exception as exc:errors.append(f'{p.relative_to(ROOT)}: {exc}')
+    annotate_id_references(found)
     return {'files':files,'findings':found,'errors':errors,'excluded_folders':sorted(SKIP)}
 
 def preview(file,shape_key,x,y,scope,other_key=None,chain_keys=None):
@@ -432,16 +528,13 @@ def apply_fixes(ids):
                     raise ValueError('Čáry z různých scrapů')
                 if i and dist(members[i-1]['nodes'][-1]['p'],sh['nodes'][0]['p'])>NEAR:
                     raise ValueError('Návaznost už není platná')
-            def body_coords(sh):
-                body=obj['lines'][sh['start']:sh['end']-1]
-                if len(body)!=len(sh['nodes']):
-                    raise ValueError('Čára obsahuje direktivy či komentáře')
-                for line in body:
-                    tokens=line.split('#',1)[0].split()
-                    if '#' in line or len(tokens) not in (2,6):
-                        raise ValueError('Nejednoznačné vnitřní atributy')
-                return body
-            joined=[obj['lines'][reference['start']-1]]+body_coords(reference)
+            def body_coords(sh, first=False):
+                info,error=merge_body_info(sh,obj['lines'])
+                if info is None:raise ValueError('Nekompatibilní obsah line: '+str(error))
+                if not first and info['first_anchor_smooth']:
+                    raise ValueError('smooth u začátku další čáry vyžaduje ruční kontrolu')
+                return info['body']
+            joined=[obj['lines'][reference['start']-1]]+body_coords(reference,first=True)
             for prev,sh in zip(members,members[1:]):
                 # Reuse the previous endpoint. Only the old start coordinate of
                 # the next line is discarded; its Bezier handles stay unchanged.
