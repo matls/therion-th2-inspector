@@ -1,5 +1,10 @@
 # Změny Therion TH2 Inspector
 
+## v12
+- Bodové `altitude` se přenáší s bodem při přesném obrácení geometrie; zachovává se i u krajních bodů.
+- Sloučení bezpečně zachovává altitude na společném bodu, odmítá rozdílné výšky a neurčitou blízkou návaznost s výškou.
+- 41 automatických testů.
+
 ## v11
 - Individuálně schvalované obrácení geometrie pro `wall`, `slope`, `pit`, `chimney`, `floor-step` s explicitním `-reverse on`.
 - Přesné obrácení Bézierových segmentů; validace stejných souřadnic a přesunu vnitřních `smooth`.
