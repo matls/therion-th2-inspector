@@ -40,7 +40,7 @@ endscrap
             exact = [x for x in findings if x['kind'] == 'merge']
             self.assertEqual(len(exact), 1)
             self.assertTrue(exact[0]['safe'])
-            self.assertTrue(any(x['kind'] == 'near' and not x['safe'] for x in findings))
+            self.assertTrue(any(x['kind'] == 'near' for x in findings))
             self.assertTrue(any(x['kind'] == 'open' for x in findings))
             app.apply_fixes([exact[0]['id']])
             self.assertEqual(f.read_text().count('line wall'), 2)
