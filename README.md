@@ -1,4 +1,4 @@
-# Therion TH2 Inspector – verze 10 (experimentální)
+# Therion TH2 Inspector – verze 11 (experimentální)
 
 Lokální Python/HTML nástroj pro hledání a schvalování oprav souborů `.th2`. Nejde o oficiální součást Therionu.
 
@@ -14,7 +14,7 @@ Ruční spuštění: `py therion_kontrola.py "C:\mapy\jeskyne" --near 1.0`. Pře
 
 - **Přesné návaznosti i blízké konce:** schválení spojení dvou čar a celých řetězců. Při blízkých koncích vznikne společný bod v souřadnicích **konce předchozí čáry**; počáteční bod navazující čáry se přizpůsobí. Ostatní souřadnice a Bézierovy řídicí body se nepřepočítávají. Zelený přerušovaný náhled ukazuje změnu prvního úseku připojované čáry.
 - **Shodné parametry:** podporujeme i identické `-reverse on/off`, `-subtype` a další parametry hlavičky; pořadí parametrů v hlavičce se může lišit. Parametry musí být shodné u všech členů řetězce. Nejednoznačné nebo opakované parametry jsou pouze ke kontrole.
-- **Směr spojení:** jen geometrická návaznost konec A → začátek B. Nesnažíme se obracet geometrii ani měnit `-reverse`. Čáry s `-id`, komentáři uvnitř těla, uzavřené čáry, rozvětvení a nejednoznačné kombinace se automaticky neslučují. Vnitřní `smooth on` a `smooth off` jsou nově podporovány a zachovávají se na původním místě. `smooth` navázané na počáteční bod připojované čáry zůstává jen ke kontrole; jiné vnitřní direktivy rovněž.
+- **Směr spojení:** přímé sloučení vyžaduje návaznost konec A → začátek B. Pro vybrané čáry s `-reverse on` je dostupné samostatně schvalované obrácení geometrie; následně znovu prohledej projekt a spoj čáry. Čáry bez explicitního `-reverse on` se neobracejí. Čáry s `-id`, komentáři uvnitř těla, uzavřené čáry, rozvětvení a nejednoznačné kombinace se automaticky neslučují. Vnitřní `smooth on` a `smooth off` jsou nově podporovány a zachovávají se na původním místě. `smooth` navázané na počáteční bod připojované čáry zůstává jen ke kontrole; jiné vnitřní direktivy rovněž.
 - **Uzavření:** je-li první a poslední bod jedné `line` přesně stejný a chybí `-close on`, nabídne se změna na `-close on` i pro `wall`; totožnost prvního a posledního bodu se nezobrazuje jako smazatelná duplicita. Jinak zůstávají opravy duplicitních přímých bodů a drobných Bézierových smyček.
 - **Vyloučené složky:** `data`, `záloha`, `zaloha` a `_Therion_zalohy` v jakékoli úrovni, bez ohledu na velikost písmen. Seznam je viditelný v záhlaví stránky.
 
@@ -30,7 +30,7 @@ Před úpravou se do `_Therion_zalohy/<čas>/` uloží kopie **pouze souborů, k
 
 `py -m unittest discover -s tests -v`
 
-28 automatických testů pokrývá mimo jiné totožné i různě seřazené `-reverse`/`-subtype`, přesnou a blízkou návaznost včetně Bézierovy křivky, smíšené řetězce, konflikty, zachované `smooth on/off` i blokované rizikové vnitřní direktivy, uzavření `wall`, zálohy a vyloučené složky. JavaScript byl zkontrolován pomocí `node --check`.
+34 automatických testů pokrývá mimo jiné totožné i různě seřazené `-reverse`/`-subtype`, přesnou a blízkou návaznost včetně Bézierovy křivky, smíšené řetězce, konflikty, zachované `smooth on/off` i blokované rizikové vnitřní direktivy, uzavření `wall`, zálohy a vyloučené složky. JavaScript byl zkontrolován pomocí `node --check`.
 
 Zdrojový kód: https://github.com/matls/therion-th2-inspector
 
@@ -48,3 +48,11 @@ Nálezy přesné i blízké návaznosti zobrazují **v horní části detailu v�
 - K žádným externím souborům mimo vybraný kořen se přístup neprovádí.
 
 **Zálohy před opravami zůstávají zachované.** První použití vyzkoušej na kopii projektu.
+
+## Verze 11: bezpečné obrácení geometrie `-reverse on`
+
+- Samostatný typ nálezu **Obrácení -reverse on**, individuální schválení, automatická záloha. Jen `wall`, `slope`, `pit`, `chimney`, `floor-step`; nikoli `border` nebo čáry bez `-reverse on`.
+- Otočí pořadí bodů a Bézierových segmentů, včetně prohození dvojice řídicích bodů; odstraní `-reverse on` z hlavičky. Verifikace všech přímých i Bézierových segmentů porovnává souřadnice bez zaokrouhlení. Vnitřní `smooth on/off` se přemístí s původním bodem.
+- Čáry s ID, uzavřené čáry, neznámé direktivy a `smooth` na krajním bodu se **automaticky neobracejí**. `smooth` na krajním bodu má při obrácení nejednoznačný význam.
+- Po schválení obrácení spusť nové prohledání: následně se mohou zobrazit další návrhy sloučení. Obrácení a slučování se provádí **ve dvou samostatných dávkách**; stejné čáry nelze ve stejné dávce obracet a upravovat jinak.
+- Pro některé směrové atributy může být výsledek významově citlivý; ověř zobrazení a výsledek kompilace v Therionu na kopii projektu.
