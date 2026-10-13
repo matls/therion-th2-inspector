@@ -152,6 +152,106 @@ def merge_blockers(a, b, items, source_lines, near):
         add('Rozvětvení nebo další blízká čára v místě návaznosti'+(f" (řádky začátků: {', '.join(colliders[:8])})" if colliders else ''))
     return issues
 
+REVERSE_TYPES={'wall','slope','pit','chimney','floor-step'}
+
+def reverse_body(shape, source_lines):
+    """Reversible, coordinate-exact geometry. Reject ambiguous directives.
+
+    A smooth directive after an anchor belongs to that anchor, so its value
+    moves with the anchor in the reversed sequence. A trailing smooth directive
+    on the old first anchor would be unsafe at the new final anchor if omitted.
+    """
+    if shape['type'] not in REVERSE_TYPES or shape['id'] or shape['close']:
+        raise ValueError('Nepodporovaný typ, ID nebo uzavřená čára')
+    if '-reverse on' not in shape['header'].split('#')[0]:
+        raise ValueError('Obrácení se povoluje jen pro explicitní -reverse on')
+    if shape['header'].split().count('-reverse')!=1 or '#' in source_lines[shape['start']-1]:
+        raise ValueError('Nejednoznačná hlavička')
+    if options_signature(shape) is None:
+        raise ValueError('Nepodporované parametry hlavičky')
+    if len(shape['nodes'])<2 or shape['nodes'][0]['p']==shape['nodes'][-1]['p']:
+        raise ValueError('Uzavřená nebo příliš krátká čára')
+    body=source_lines[shape['start']:shape['end']-1]
+    anchors=[]
+    for row in body:
+        stripped=row.strip()
+        tokens=stripped.split()
+        if '#' in row or not tokens:
+            raise ValueError('Komentář nebo prázdný řádek uvnitř line')
+        if tokens[:1]==['smooth'] and tokens[1:] in (['on'],['off']):
+            if not anchors or anchors[-1]['smooth'] is not None:
+                raise ValueError('Nejednoznačné smooth')
+            anchors[-1]['smooth']=tokens[1]
+            continue
+        if len(tokens) not in (2,6) or (not anchors and len(tokens)!=2):
+            raise ValueError('Nepodporovaná direktiva nebo geometrie')
+        try: [float(x) for x in tokens]
+        except ValueError: raise ValueError('Neplatná souřadnice')
+        anchors.append({'tokens':tokens, 'smooth':None})
+    if len(anchors)!=len(shape['nodes']):
+        raise ValueError('Nesoulad souřadnic a parseru')
+    # Interpreting smooth is ambiguous at the new initial/final anchor.
+    # Internal smooth can be moved with its anchor, preserving its value.
+    if anchors[0]['smooth'] or anchors[-1]['smooth']:
+        raise ValueError('smooth na krajním bodu vyžaduje ruční kontrolu')
+    indent='  '
+    newline='\r\n' if source_lines[shape['start']-1].endswith('\r\n') else '\n'
+    lines=[indent+' '.join(anchors[-1]['tokens'][-2:])+newline]
+    for i in range(len(anchors)-2,-1,-1):
+        old=anchors[i+1]['tokens']
+        if len(old)==6:
+            toks=old[2:4]+old[0:2]+anchors[i]['tokens'][-2:]
+        else:
+            toks=anchors[i]['tokens'][-2:]
+        lines.append(indent+' '.join(toks)+newline)
+        if anchors[i]['smooth'] is not None:
+            lines.append(indent+'smooth '+anchors[i]['smooth']+newline)
+    # Ensure reversibility of all geometric segments with no tolerance loss.
+    old_segments=shape['segments']
+    expected=[]
+    for seg in reversed(old_segments):
+        expected.append(list(reversed(seg['points'])))
+    cursor=anchors[-1]['tokens'][-2:]
+    parsed=[]
+    for line in lines[1:]:
+        toks=line.split()
+        if toks[:1]==['smooth']:continue
+        pts=[cursor,toks[-2:]] if len(toks)==2 else [cursor,toks[:2],toks[2:4],toks[-2:]]
+        parsed.append(pts);cursor=toks[-2:]
+    if len(parsed)!=len(expected) or any(
+        [[float(z) for z in pt] for pt in actual] != prior
+        for actual,prior in zip(parsed,expected)):
+        raise ValueError('Ověření geometrické ekvivalence selhalo')
+    return lines
+
+def reversed_header(shape, source_lines):
+    header=source_lines[shape['start']-1]
+    base,sep,comment=header.partition('#')
+    if sep:raise ValueError('Komentář v hlavičce')
+    new=re.sub(r'(?<!\S)-reverse\s+on(?=\s|$)', '',base.rstrip('\r\n'),count=1)
+    if new==base.rstrip('\r\n'):raise ValueError('Chybí -reverse on')
+    return new.rstrip()+('\r\n' if header.endswith('\r\n') else '\n')
+
+def find_reversals(path, shapes, source_lines):
+    results=[]
+    for sh in shapes:
+        if sh['type'] not in REVERSE_TYPES or '-reverse on' not in sh['header'] or sh['end'] is None:
+            continue
+        try:
+            reverse_body(sh,source_lines)
+            reversed_header(sh,source_lines)
+            safe=True;reason='Lze obrátit geometrii a odstranit -reverse on; potom znovu prohledej návaznosti.'
+        except ValueError as exc:
+            safe=False;reason='Obrácení jen ke kontrole: '+str(exc)
+        results.append({'id':hashlib.sha1(f'{path}:{sh["start"]}:reverse'.encode()).hexdigest()[:16],
+            'file':str(path.relative_to(ROOT)),'scrap':sh['scrap'],'type':sh['type'],
+            'line_id':sh['id'],'start':sh['start'],'row':sh['start'],
+            'first_row':None,'kind':'reverse','x':sh['nodes'][0]['p'][0] if sh['nodes'] else 0,
+            'y':sh['nodes'][0]['p'][1] if sh['nodes'] else 0,'safe':safe,
+            'reason':reason,'shape_key':sh['key'],'close_setting':sh['close_setting'],
+            'endpoints_equal':False})
+    return results
+
 def parse_file(path):
     raw=path.read_bytes(); encoding='utf-8-sig' if raw.startswith(b'\xef\xbb\xbf') else 'utf-8'
     try: text=raw.decode(encoding)
@@ -228,6 +328,7 @@ def parse_file(path):
         elif cmd=='scrap':scrap=parts[1] if len(parts)>1 else '';scrap_index+=1
         elif cmd=='endscrap':scrap=''
     endline()
+    findings.extend(find_reversals(path,shapes,lines))
     findings.extend(find_joins(path,shapes,lines))
     findings.extend(find_chains(path,findings,shapes))
     return {'shapes':shapes,'findings':findings,'lines':lines,'encoding':encoding,'hash':hashlib.sha256(raw).hexdigest()}
@@ -422,7 +523,7 @@ def preview(file,shape_key,x,y,scope,other_key=None,chain_keys=None):
 
 HTML=r'''<!doctype html><html lang="cs"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Therion – kontrola TH2</title><style>
 :root{font-family:system-ui,Segoe UI,sans-serif;color:#182536;background:#f4f6f9}*{box-sizing:border-box}body{margin:0;display:flex;flex-direction:column;height:100dvh}header{background:#17283d;color:white;padding:6px 16px;display:flex;align-items:center;gap:14px;flex-wrap:nowrap;flex:none;min-height:40px}header h2{margin:0;font-size:19px;line-height:1.25;white-space:nowrap}header small{color:#c8d4e3;font-size:12px}header .project-info{display:flex;align-items:center;gap:14px;flex:1;min-width:0;white-space:nowrap}header #root{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}header #excluded{flex:none;white-space:nowrap}header #excluded{opacity:.85}main{display:grid;grid-template-columns:minmax(280px,380px) 1fr;flex:1;min-height:0}aside{overflow:auto;border-right:1px solid #ccd4df;background:white;padding:12px}section{min-width:0;overflow:auto;padding:16px}button,select,input{font:inherit}button{border:1px solid #c2ccd8;background:white;border-radius:7px;padding:7px 11px;cursor:pointer}button:hover{background:#e8f0fa}button.primary{background:#1463a0;color:white;border-color:#1463a0}button.danger{background:#9b3535;color:white}button:disabled{opacity:.45;cursor:default}.entry{border:1px solid #d6dfe8;padding:10px;border-radius:9px;margin:8px 0;cursor:pointer}.entry.active{border:2px solid #1870b9;background:#edf6ff}.entry strong{display:block}.meta{font-size:12px;color:#617082;overflow-wrap:anywhere}.pill{display:inline-block;padding:2px 7px;background:#e7edf5;border-radius:6px;font-size:12px}.warn{color:#a32f2f}.good{color:#137a50}#canvas{width:100%;height:min(62vh,610px);border:1px solid #cad4df;background:white;border-radius:10px;touch-action:none;cursor:grab}.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}.panel{background:white;border:1px solid #d7dfe9;border-radius:10px;padding:14px;margin-bottom:12px}.panel p{margin:6px 0}.spacer{flex:1}#status{white-space:pre-wrap;font-size:13px}.blockers{margin-top:8px;padding:9px 12px;background:#fff3f1;border-left:3px solid #c34c43;border-radius:5px;font-size:13px;line-height:1.5}.blockers strong{display:block;margin-bottom:3px}.blockers ul{margin:3px 0 0;padding-left:20px}.hidden{display:none}label{cursor:pointer}@media(max-width:950px){header{flex-wrap:wrap;gap:4px 12px}header .project-info{flex-basis:100%;flex-wrap:wrap;gap:3px 10px}header #root{flex-basis:100%}header #excluded{white-space:normal}}@media(max-width:760px){body{height:auto;min-height:100dvh}header{padding:8px 12px}header h2{font-size:18px}main{display:block;height:auto;min-height:0}aside{max-height:35vh}#canvas{height:45vh}}</style></head><body>
-<header><h2>Therion · kontrola kresby</h2><div class="project-info"><small id="root"></small><small id="excluded"></small></div></header><main><aside><div class="toolbar"><button onclick="rescan()">Znovu prohledat</button><span id="count"></span><small id="repairCount" class="meta"></small></div><input id="filter" placeholder="Hledat soubor, scrap, ID…" style="width:100%;padding:8px" oninput="renderList()"><div class="toolbar"><select id="kind" onchange="renderList()"><option value="">Všechny nálezy</option><option value="dup">Duplicitní body</option><option value="loop">Smyčky</option><option value="open">Chybějící uzavření</option><option value="merge">Přesné návaznosti (dvojice)</option><option value="chain">Celé řetězce</option><option value="near">Blízké konce (spojení s korekcí)</option></select><select id="repairFilter" onchange="renderList()"><option value="">Všechny možnosti</option><option value="safe">Lze opravit</option><option value="review">Pouze kontrola</option></select><select id="decisionFilter" onchange="renderList()"><option value="">Všechna rozhodnutí</option><option value="fix">Ke změně</option><option value="later">Neprohlédnuté</option><option value="skip">Přeskočené</option></select></div><div id="list"></div></aside><section><div class="panel"><strong id="heading">Vyber nález vlevo</strong><div id="blockers" class="blockers hidden"></div><p class="meta" id="detail"></p><div class="toolbar"><label><input type="checkbox" id="surround" checked onchange="draw()"> Okolní čáry</label><button onclick="zoom(0.6)">+ Přiblížit</button><button onclick="zoom(1.6)">− Oddálit</button><button onclick="resetView()">Vycentrovat</button><button onclick="fullScrap()">Celý scrap</button></div><svg id="canvas" viewBox="0 0 900 550" xmlns="http://www.w3.org/2000/svg"></svg><p class="meta">Červená: původní čára · zelená přerušovaná: návrh opravy Bézierovy smyčky nebo návaznosti blízkých konců · tyrkysová přerušovaná: navržené uzavření · šedá: okolí · oranžová: táhla Bézierových křivek · červený kroužek: nález. Posouvání tažením myši, zoom kolečkem.</p><div class="toolbar"><button onclick="choose('skip')">Přeskočit</button><button onclick="choose('later')">Později</button><button id="fix" class="primary" onclick="choose('fix')">Schválit odstranění bodu</button><span id="decision"></span></div></div><div class="panel"><strong>Hromadné opravy</strong><p class="meta">Blízké konce: při spojení se začátek navazující čáry přesune na přesný konec předchozí; řídicí body Bézierů zůstávají stejné. Zkontroluj zelený náhled. Uzavření je povoleno jen při přesné shodě prvního a posledního bodu. Zkontroluj náhled před schválením. U sousedních shodných bodů lze odstranit i celý Bézierův segment tvořící smyčku. Její tvar se tím změní; schvaluj jednotlivě.</p><div class="toolbar"><button onclick="exportCsv()">Export CSV</button><button onclick="showPlan()">Zobrazit plán změn</button><button class="danger" onclick="apply()">Zálohovat a provést schválené změny</button></div><div id="status"></div></div></section></main>
+<header><h2>Therion · kontrola kresby</h2><div class="project-info"><small id="root"></small><small id="excluded"></small></div></header><main><aside><div class="toolbar"><button onclick="rescan()">Znovu prohledat</button><span id="count"></span><small id="repairCount" class="meta"></small></div><input id="filter" placeholder="Hledat soubor, scrap, ID…" style="width:100%;padding:8px" oninput="renderList()"><div class="toolbar"><select id="kind" onchange="renderList()"><option value="">Všechny nálezy</option><option value="reverse">Obrácení -reverse on</option><option value="dup">Duplicitní body</option><option value="loop">Smyčky</option><option value="open">Chybějící uzavření</option><option value="merge">Přesné návaznosti (dvojice)</option><option value="chain">Celé řetězce</option><option value="near">Blízké konce (spojení s korekcí)</option></select><select id="repairFilter" onchange="renderList()"><option value="">Všechny možnosti</option><option value="safe">Lze opravit</option><option value="review">Pouze kontrola</option></select><select id="decisionFilter" onchange="renderList()"><option value="">Všechna rozhodnutí</option><option value="fix">Ke změně</option><option value="later">Neprohlédnuté</option><option value="skip">Přeskočené</option></select></div><div id="list"></div></aside><section><div class="panel"><strong id="heading">Vyber nález vlevo</strong><div id="blockers" class="blockers hidden"></div><p class="meta" id="detail"></p><div class="toolbar"><label><input type="checkbox" id="surround" checked onchange="draw()"> Okolní čáry</label><button onclick="zoom(0.6)">+ Přiblížit</button><button onclick="zoom(1.6)">− Oddálit</button><button onclick="resetView()">Vycentrovat</button><button onclick="fullScrap()">Celý scrap</button></div><svg id="canvas" viewBox="0 0 900 550" xmlns="http://www.w3.org/2000/svg"></svg><p class="meta">Červená: původní čára · zelená přerušovaná: návrh opravy Bézierovy smyčky nebo návaznosti blízkých konců · tyrkysová přerušovaná: navržené uzavření · šedá: okolí · oranžová: táhla Bézierových křivek · červený kroužek: nález. Posouvání tažením myši, zoom kolečkem.</p><div class="toolbar"><button onclick="choose('skip')">Přeskočit</button><button onclick="choose('later')">Později</button><button id="fix" class="primary" onclick="choose('fix')">Schválit odstranění bodu</button><span id="decision"></span></div></div><div class="panel"><strong>Hromadné opravy</strong><p class="meta">Blízké konce: při spojení se začátek navazující čáry přesune na přesný konec předchozí; řídicí body Bézierů zůstávají stejné. Zkontroluj zelený náhled. Uzavření je povoleno jen při přesné shodě prvního a posledního bodu. Zkontroluj náhled před schválením. U sousedních shodných bodů lze odstranit i celý Bézierův segment tvořící smyčku. Její tvar se tím změní; schvaluj jednotlivě.</p><div class="toolbar"><button onclick="exportCsv()">Export CSV</button><button onclick="showPlan()">Zobrazit plán změn</button><button class="danger" onclick="apply()">Zálohovat a provést schválené změny</button></div><div id="status"></div></div></section></main>
 <script>
 let data=[], decisions={}, selected=null, shapes=[], view=null, full=false, dragging=null;
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -430,10 +531,10 @@ async function api(path,body){let r=await fetch(path,{method:body?'POST':'GET',h
 async function init(){let r=await api('/api/scan');data=r.findings;$('root').textContent=r.root+' · '+r.files+' souborů';$('root').title=$('root').textContent;$('excluded').textContent='Vyloučeno: '+r.excluded_folders.join(' · ');$('excluded').title=$('excluded').textContent;$('root').title=r.root+' · '+r.files+' souborů';$('excluded').title='Vyloučené složky včetně podadresářů: '+r.excluded_folders.join(' · ');$('count').textContent=data.length+' nálezů';$('repairCount').textContent=data.filter(f=>f.safe).length+' opravitelných / '+data.filter(f=>!f.safe).length+' ke kontrole';try{decisions=JSON.parse(localStorage.getItem('therion_decisions_'+r.root)||'{}')}catch(e){}for(let f of data){if(!f.safe)delete decisions[f.id]}renderList();if(data.length)selectItem(data[0].id);if(r.errors.length)$('status').textContent=r.errors.join('\n')}
 function save(){localStorage.setItem('therion_decisions_'+$('root').textContent.split(' · ')[0],JSON.stringify(decisions))}
 function affected(f){return f.kind==='chain'?f.chain_keys:((f.kind==='merge'||f.kind==='near')?[f.shape_key,f.other_key]:[f.shape_key])}
-function conflicts(f){if(!f.safe)return [];let mine=affected(f);return data.filter(o=>o.id!==f.id&&decisions[o.id]==='fix'&&(['merge','near','chain'].includes(f.kind)||['merge','near','chain'].includes(o.kind))&&affected(o).some(k=>mine.includes(k))).map(o=>o)}
+function conflicts(f){if(!f.safe)return [];let mine=affected(f);return data.filter(o=>o.id!==f.id&&decisions[o.id]==='fix'&&(['merge','near','chain','reverse'].includes(f.kind)||['merge','near','chain','reverse'].includes(o.kind))&&affected(o).some(k=>mine.includes(k))).map(o=>o)}
 function conflictLabel(f){let c=conflicts(f);return c.length?'Konflikt se schváleným návrhem: '+c.map(o=>o.kind==='chain'?'řetězec '+o.start:o.kind+' ř. '+o.start).join(', '):''}
-function renderList(){let q=$('filter').value.toLowerCase(),k=$('kind').value,d=$('decisionFilter').value,repair=$('repairFilter').value;let arr=data.filter(f=>(!k||f.kind===k)&&(!repair||(repair==='safe'?f.safe:!f.safe))&&(!d||(decisions[f.id]||'later')===d)&&(!q||[f.file,f.scrap,f.line_id,f.type,f.row].join(' ').toLowerCase().includes(q)));$('list').innerHTML=arr.map(f=>`<div class="entry ${selected===f.id?'active':''}" onclick="selectItem('${f.id}')"><strong>${f.kind==='dup'?'Duplicitní bod':f.kind==='open'?'Chybí uzavření':f.kind==='merge'?'Sloučení čar':f.kind==='chain'?'Sloučení řetězce':f.kind==='near'?'Blízké konce':'Smyčka'} <span class="pill">${esc(decisions[f.id]||'později')}</span></strong><div class="meta">${esc(f.file)}<br>${esc(f.scrap)} · ${esc(f.type)} ${esc(f.line_id)} · ř. ${f.row}${f.first_row?' / '+f.first_row:''}</div><small class="${f.safe&&!conflicts(f).length?'good':'warn'}">${f.kind==='open'?'Možnost uzavřít':f.kind==='near'?'Odchylka '+f.gap+(f.safe?' (lze schválit)':' (jen kontrola)'):f.kind==='chain'?'Řetězec '+f.chain_keys.length+' čar':f.kind==='merge'?(f.safe?'Lze schválit sloučení':'Pouze kontrola sloučení'):f.safe?'Lze schválit':'Pouze kontrola'}${conflictLabel(f)?'<br>'+esc(conflictLabel(f)):''}</small></div>`).join('')||'<p>Žádné nálezy.</p>'}
-async function selectItem(id){selected=id;let f=data.find(x=>x.id===id);if(!f)return;full=false;$('heading').textContent=(f.kind==='dup'?'Duplicitní bod':f.kind==='open'?'Chybí uzavření':f.kind==='merge'?'Přesná návaznost':f.kind==='chain'?'Celý řetězec':f.kind==='near'?'Blízké konce':'Bézierova smyčka')+' · '+f.type+' '+(f.line_id||'bez ID');$('detail').textContent=(f.kind==='chain'?'Řetězec '+f.chain_keys.length+' čar · ':'')+f.file+' · scrap '+f.scrap+' · line řádek '+f.start+' · nález řádek '+f.row+(f.first_row?' / '+f.first_row:'')+' · XY '+f.x+', '+f.y+' · -close '+f.close_setting+' · '+(f.reason||'')+' · koncové body '+(f.endpoints_equal?'shodné':'rozdílné')+(f.gap!==undefined?' · odchylka '+f.gap:'');let blockers=(f.blockers||[]);let box=$('blockers');if((f.kind==='merge'||f.kind==='near')&&!f.safe){box.classList.remove('hidden');box.innerHTML='<strong>Proč nelze sloučit automaticky:</strong><ul>'+blockers.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>'}else{box.classList.add('hidden');box.innerHTML=''};$('fix').disabled=!f.safe||conflicts(f).length>0;$('fix').textContent=f.kind==='open'?'Schválit uzavření (-close on)':(f.kind==='merge'||f.kind==='near')?'Schválit spojení čar':f.kind==='chain'?'Schválit celý řetězec ('+f.chain_keys.length+' čar)':f.kind==='loop'?'Schválit navrženou opravu smyčky':'Schválit odstranění bodu / smyčky';$('decision').textContent='Rozhodnutí: '+(decisions[id]||'později')+(conflictLabel(f)?' · '+conflictLabel(f):'');view=null;await draw();renderList()}
+function renderList(){let q=$('filter').value.toLowerCase(),k=$('kind').value,d=$('decisionFilter').value,repair=$('repairFilter').value;let arr=data.filter(f=>(!k||f.kind===k)&&(!repair||(repair==='safe'?f.safe:!f.safe))&&(!d||(decisions[f.id]||'later')===d)&&(!q||[f.file,f.scrap,f.line_id,f.type,f.row].join(' ').toLowerCase().includes(q)));$('list').innerHTML=arr.map(f=>`<div class="entry ${selected===f.id?'active':''}" onclick="selectItem('${f.id}')"><strong>${f.kind==='reverse'?'Obrátit směr čáry':f.kind==='dup'?'Duplicitní bod':f.kind==='open'?'Chybí uzavření':f.kind==='merge'?'Sloučení čar':f.kind==='chain'?'Sloučení řetězce':f.kind==='near'?'Blízké konce':'Smyčka'} <span class="pill">${esc(decisions[f.id]||'později')}</span></strong><div class="meta">${esc(f.file)}<br>${esc(f.scrap)} · ${esc(f.type)} ${esc(f.line_id)} · ř. ${f.row}${f.first_row?' / '+f.first_row:''}</div><small class="${f.safe&&!conflicts(f).length?'good':'warn'}">${f.kind==='reverse'?(f.safe?'Lze obrátit':'Pouze kontrola'):f.kind==='open'?'Možnost uzavřít':f.kind==='near'?'Odchylka '+f.gap+(f.safe?' (lze schválit)':' (jen kontrola)'):f.kind==='chain'?'Řetězec '+f.chain_keys.length+' čar':f.kind==='merge'?(f.safe?'Lze schválit sloučení':'Pouze kontrola sloučení'):f.safe?'Lze schválit':'Pouze kontrola'}${conflictLabel(f)?'<br>'+esc(conflictLabel(f)):''}</small></div>`).join('')||'<p>Žádné nálezy.</p>'}
+async function selectItem(id){selected=id;let f=data.find(x=>x.id===id);if(!f)return;full=false;$('heading').textContent=(f.kind==='reverse'?'Obrátit směr čáry':f.kind==='dup'?'Duplicitní bod':f.kind==='open'?'Chybí uzavření':f.kind==='merge'?'Přesná návaznost':f.kind==='chain'?'Celý řetězec':f.kind==='near'?'Blízké konce':'Bézierova smyčka')+' · '+f.type+' '+(f.line_id||'bez ID');$('detail').textContent=(f.kind==='chain'?'Řetězec '+f.chain_keys.length+' čar · ':'')+f.file+' · scrap '+f.scrap+' · line řádek '+f.start+' · nález řádek '+f.row+(f.first_row?' / '+f.first_row:'')+' · XY '+f.x+', '+f.y+' · -close '+f.close_setting+' · '+(f.reason||'')+' · koncové body '+(f.endpoints_equal?'shodné':'rozdílné')+(f.gap!==undefined?' · odchylka '+f.gap:'');let blockers=(f.blockers||[]);let box=$('blockers');if((f.kind==='merge'||f.kind==='near')&&!f.safe){box.classList.remove('hidden');box.innerHTML='<strong>Proč nelze sloučit automaticky:</strong><ul>'+blockers.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>'}else{box.classList.add('hidden');box.innerHTML=''};$('fix').disabled=!f.safe||conflicts(f).length>0;$('fix').textContent=f.kind==='reverse'?'Schválit obrácení čáry (-reverse on → bez reverse)':f.kind==='open'?'Schválit uzavření (-close on)':(f.kind==='merge'||f.kind==='near')?'Schválit spojení čar':f.kind==='chain'?'Schválit celý řetězec ('+f.chain_keys.length+' čar)':f.kind==='loop'?'Schválit navrženou opravu smyčky':'Schválit odstranění bodu / smyčky';$('decision').textContent='Rozhodnutí: '+(decisions[id]||'později')+(conflictLabel(f)?' · '+conflictLabel(f):'');view=null;await draw();renderList()}
 async function draw(){let f=data.find(x=>x.id===selected);if(!f)return;shapes=await api('/api/preview',{id:f.id,scope:full?'all':f.kind==='chain'?'line':$('surround').checked?'near':'line'});if(!view){if(f.kind==='chain'&&shapes.length){let pts=shapes.flatMap(x=>x.segments.flatMap(z=>z.points));if(pts.length){let xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]);let x=Math.min(...xs),y=Math.min(...ys),w=Math.max(30,Math.max(...xs)-x),h=Math.max(20,Math.max(...ys)-y);view={x:x-w*.15,y:y-h*.15,w:w*1.3,h:h*1.3}}else resetView()}else resetView()}renderSvg()}
 function resetView(){let f=data.find(x=>x.id===selected);if(!f)return;view={x:f.x-160,y:f.y-98,w:320,h:196};renderSvg()}
 function fullScrap(){full=true;view=null;api('/api/preview',{id:selected,scope:'all'}).then(s=>{shapes=s;let pts=s.flatMap(x=>x.segments.flatMap(z=>z.points));if(pts.length){let xs=pts.map(p=>p[0]),ys=pts.map(p=>p[1]),xmin=Math.min(...xs),xmax=Math.max(...xs),ymin=Math.min(...ys),ymax=Math.max(...ys);let w=Math.max(30,xmax-xmin),h=Math.max(20,ymax-ymin);view={x:xmin-w*.08,y:ymin-h*.08,w:w*1.16,h:h*1.16}}renderSvg()})}
@@ -488,7 +589,7 @@ def apply_fixes(ids):
     chosen=[]
     for id in set(ids):
         f=byid.get(id)
-        if f is None or f['kind'] not in ('dup','open','merge','near','chain','loop') or not f['safe']:raise ValueError('Nález není povoleno automaticky opravit: '+str(id))
+        if f is None or f['kind'] not in ('dup','open','merge','near','chain','loop','reverse') or not f['safe']:raise ValueError('Nález není povoleno automaticky opravit: '+str(id))
         chosen.append(f)
     # A line may participate in exactly one selected merge operation.
     merged_keys=[key for f in chosen if f['kind'] in ('merge','near','chain')
@@ -497,6 +598,10 @@ def apply_fixes(ids):
         raise ValueError('Konfliktní slučování: jedna čára patří do více schválených návrhů')
     if any(f['shape_key'] in merged_keys for f in chosen if f['kind'] not in ('merge','near','chain')):
         raise ValueError('Sloučení a další opravy téže čáry proveď v oddělených dávkách')
+    if len({f['shape_key'] for f in chosen if f['kind']=='reverse'}) != sum(f['kind']=='reverse' for f in chosen):
+        raise ValueError('Vícenásobné obrácení jedné čáry')
+    if any(f['shape_key'] in {r['shape_key'] for r in chosen if r['kind']=='reverse'} for f in chosen if f['kind']!='reverse'):
+        raise ValueError('Obrácení a další opravu téže čáry proveď odděleně')
     segment_targets=[(f['shape_key'],f['row']) for f in chosen if f['kind'] in ('dup','loop')]
     if len(segment_targets)!=len(set(segment_targets)):
         raise ValueError('Konfliktní opravy stejného segmentu')
@@ -550,6 +655,12 @@ def apply_fixes(ids):
                     if row!=reference['start']:lines[row-1]=''
         for f in fs:
             if f['kind'] in ('merge','near','chain'):continue
+            if f['kind']=='reverse':
+                sh=next(sh for sh in obj['shapes'] if sh['key']==f['shape_key'])
+                body=reverse_body(sh,obj['lines'])
+                lines[sh['start']-1]=reversed_header(sh,obj['lines'])+''.join(body)+'endline'+('\r\n' if obj['lines'][sh['end']-1].endswith('\r\n') else '\n')
+                for row in range(sh['start']+1,sh['end']+1):lines[row-1]=''
+                continue
             if f['kind']=='open':
                 row=f['start']
                 # Existing -close option can appear on a separate line inside the line block.
