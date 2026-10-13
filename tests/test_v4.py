@@ -30,10 +30,12 @@ endscrap
             p=app.ROOT/'drawing.th2';p.write_text(source)
             fs=app.scan()['findings'];joins=[f for f in fs if f['kind']=='merge']
             self.assertEqual(len(joins),1)
-            self.assertFalse(joins[0]['safe'])
-            with self.assertRaises(ValueError):
-                app.apply_fixes([joins[0]['id']])
-            self.assertEqual(p.read_text(),source)
+            self.assertTrue(joins[0]['safe'])
+            app.apply_fixes([joins[0]['id']])
+            result=p.read_text()
+            self.assertEqual(result.count('line floor-step'),1)
+            self.assertEqual(result.count('smooth off'),2)
+            self.assertIn('line wall',result)
     def test_small_bezier_loop_can_be_removed(self):
         with tempfile.TemporaryDirectory() as td:
             app.ROOT=Path(td)
